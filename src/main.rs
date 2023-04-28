@@ -10,10 +10,10 @@ use tokio::{
 use tonic::transport::Server;
 
 pub mod graph;
-pub mod graph_permissions;
 pub mod grpc_service;
+pub mod themis_proto;
 
-use crate::graph_permissions::{
+use crate::themis_proto::{
     object_service_server::ObjectServiceServer, query_service_server::QueryServiceServer,
     relation_service_server::RelationServiceServer,
 };

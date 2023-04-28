@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
 
 use crate::graph::{self, Graph, ObjectRelation};
-use crate::graph_permissions::{
+use crate::themis_proto::{
     object_service_server::ObjectService, query_service_server::QueryService, relation::Src,
     relation_service_server::RelationService, Empty, ExistsResponse, GetRelatedToResponse,
     GetRelationsRequest, GetRelationsResponse, IsRelatedToResponse, Object, Relation, Set,

@@ -1,6 +1,6 @@
 fn main() {
     tonic_build::configure()
         .build_server(true)
-        .compile(&["proto/graph.proto"], &["proto"])
+        .compile(&["proto/themis.proto"], &["proto"])
         .unwrap();
 }

@@ -1,5 +1,5 @@
 syntax = "proto3";
-package eu.zettoit.graph;
+package eu.zettoit.themis;
 
 service ObjectService{
   rpc Create(Object) returns (Empty);
