@@ -1,0 +1,10 @@
+[user:bob]
+
+[doc:foo]
+read = [user:bob, doc:foo#owner]
+owner = [user:alice]
+
+[user:oscar]
+
+[user:alice]
+

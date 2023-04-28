@@ -1,0 +1,20 @@
+syntax = "proto3";
+package eu.zettoit.graph;
+
+message Object{
+  string namespace = 1;
+  string id = 2;
+}
+message ObjectSet{
+  Object object = 1;
+  string relation = 2;
+}
+
+
+message Relation{
+  oneof src{
+    Object object = 1;
+    ObjectSet object_set = 2;
+  }
+  ObjectSet dst = 3;
+}
