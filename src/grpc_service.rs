@@ -126,9 +126,11 @@ impl QueryService for GraphService {
     ) -> Result<Response<IsRelatedToResponse>, Status> {
         let graph = self.graph.lock().await;
 
-        let (src, dst) = transform_relation(request.get_ref(), &graph)?;
-
-        let related = graph.is_related_to(src, dst);
+        let related = if let Ok((src, dst)) = transform_relation(request.get_ref(), &graph) {
+            graph.is_related_to(src, dst)
+        } else {
+            false
+        };
 
         Ok(Response::new(IsRelatedToResponse { related }))
     }

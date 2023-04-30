@@ -1,10 +1,12 @@
-[user:bob]
+[test:hello]
 
 [doc:foo]
-read = [doc:foo#owner, user:bob]
 owner = [user:alice]
-
-[user:oscar]
+read = [user:bob, doc:foo#owner]
 
 [user:alice]
+
+[user:bob]
+
+[user:oscar]
 
