@@ -1,9 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use graph::Graph;
 use grpc_service::GraphService;
 use tokio::{
     fs::{self, File},
+    io::{AsyncBufReadExt, BufReader},
     select,
     sync::{mpsc::channel, Mutex},
 };
@@ -22,6 +23,19 @@ use crate::themis_proto::{
 async fn main() {
     dotenvy::dotenv().ok();
     pretty_env_logger::init();
+
+    let mut api_keys = HashMap::new();
+    if let Ok(file) = File::open("api_keys.dat").await {
+        let reader = BufReader::new(file);
+        let mut lines = reader.lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            let line = line.replace(' ', "");
+            let mut line = line.split('=');
+            let name = line.next().unwrap().to_string();
+            let hash = line.next().unwrap().to_string();
+            api_keys.insert(hash, name);
+        }
+    }
 
     let graph = if let Ok(mut file) = File::open("graph.dat").await {
         Graph::from_file(&mut file).await
@@ -48,6 +62,7 @@ async fn main() {
     });
 
     let graph_service = GraphService {
+        api_keys: Arc::new(Mutex::new(api_keys)),
         graph: graph.clone(),
         save_trigger: save_tx.clone(),
     };

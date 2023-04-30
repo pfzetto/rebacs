@@ -251,13 +251,20 @@ impl Graph {
                 let arr = arr
                     .iter()
                     .filter_map(|x| {
-                        let obj_ref = x.object_ref();
-                        self.nodes.get_by_b(obj_ref).map(|obj| {
-                            let (namespace, id) = (&obj.namespace, &obj.id);
+                        let rel_obj_ref = x.object_ref();
+                        self.nodes.get_by_b(rel_obj_ref).map(|rel_obj| {
+                            let (namespace, id) = (&rel_obj.namespace, &rel_obj.id);
 
-                            match x.relation() {
-                                None => format!("{}:{}", &namespace, &id),
-                                Some(rel) => format!("{}:{}#{}", &namespace, &id, &rel.0),
+                            if *namespace == obj.namespace && *id == obj.id {
+                                match x.relation() {
+                                    None => "self".to_string(),
+                                    Some(rel) => format!("self#{}", &rel.0),
+                                }
+                            } else {
+                                match x.relation() {
+                                    None => format!("{}:{}", &namespace, &id),
+                                    Some(rel) => format!("{}:{}#{}", &namespace, &id, &rel.0),
+                                }
                             }
                         })
                     })
@@ -277,16 +284,17 @@ impl Graph {
         let mut lines = reader.lines();
         let mut graph = Graph::default();
 
-        let mut node: Option<ObjectRef> = None;
+        let mut node: Option<(ObjectRef, String, String)> = None;
         let mut relations = vec![];
         while let Ok(Some(line)) = lines.next_line().await {
             if line.starts_with('[') && line.ends_with(']') {
                 let line = &mut line[1..line.len() - 1].split(':');
-                let obj_ref =
-                    graph.add_node(Object::new(line.next().unwrap(), line.next().unwrap()));
-                node = Some(obj_ref);
+                let namespace = line.next().unwrap();
+                let id = line.next().unwrap();
+                let obj_ref = graph.add_node(Object::new(namespace, id));
+                node = Some((obj_ref, namespace.to_string(), id.to_string()));
             } else if line.contains('=') && line.contains('[') && line.contains(']') {
-                if let Some(dst) = node {
+                if let Some(dst) = &node {
                     let equals_pos = line.find('=').unwrap();
                     let arr_start = line.find('[').unwrap();
                     let arr_stop = line.find(']').unwrap();
@@ -296,20 +304,26 @@ impl Graph {
 
                     for obj in arr {
                         let (src_namespace, src_id, src_rel) = if obj.contains('#') {
-                            let sep_1 = obj.find(':').unwrap();
+                            let sep_1 = obj.find(':');
                             let sep_2 = obj.find('#').unwrap();
 
-                            let namespace = &obj[..sep_1];
-                            let id = &obj[sep_1 + 1..sep_2];
+                            let (namespace, id) = if let Some(sep_1) = sep_1 {
+                                (&obj[..sep_1], &obj[sep_1 + 1..sep_2])
+                            } else {
+                                (dst.1.as_str(), dst.2.as_str())
+                            };
+
                             let rel = &obj[sep_2 + 1..];
 
                             (namespace, id, Some(rel))
                         } else {
-                            let sep_1 = obj.find(':').unwrap();
+                            let sep_1 = obj.find(':');
 
-                            let namespace = &obj[..sep_1];
-                            let id = &obj[sep_1 + 1..];
-
+                            let (namespace, id) = if let Some(sep_1) = sep_1 {
+                                (&obj[..sep_1], &obj[sep_1 + 1..])
+                            } else {
+                                (dst.1.as_str(), dst.2.as_str())
+                            };
                             (namespace, id, None)
                         };
 
@@ -317,7 +331,7 @@ impl Graph {
                             src_namespace.to_string(),
                             src_id.to_string(),
                             src_rel.map(String::from),
-                            dst,
+                            dst.0,
                             rel.to_string(),
                         ));
                     }
