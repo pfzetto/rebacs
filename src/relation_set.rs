@@ -224,6 +224,9 @@ impl RelationSet {
                 .await
                 .unwrap();
             for (rel, srcs) in rels_srcs.iter() {
+                if srcs.is_empty() {
+                    continue;
+                }
                 let srcs = srcs
                     .iter()
                     .map(|src| {

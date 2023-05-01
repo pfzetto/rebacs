@@ -51,10 +51,11 @@ impl RelationService for GraphService {
             return Err(Status::invalid_argument("dst.id must be set"));
         }
 
-        if !graph.has(
+        if !graph.has_recursive(
             ("themis_key", &*api_key),
             "write",
             ("themis_ns", &*req_dst.namespace),
+            u32::MAX,
         ) {
             return Err(Status::permission_denied(
                 "missing dst.namespace write permissions",
@@ -127,10 +128,11 @@ impl RelationService for GraphService {
             return Err(Status::invalid_argument("dst.id must be set"));
         }
 
-        if !graph.has(
+        if !graph.has_recursive(
             ("themis_key", &*api_key),
             "write",
             ("themis_ns", &*req_dst.namespace),
+            u32::MAX,
         ) {
             return Err(Status::permission_denied(
                 "missing dst.namespace write permissions",
@@ -198,10 +200,11 @@ impl RelationService for GraphService {
             return Err(Status::invalid_argument("dst.id must be set"));
         }
 
-        if !graph.has(
+        if !graph.has_recursive(
             ("themis_key", &*api_key),
             "read",
             ("themis_ns", &*req_dst.namespace),
+            u32::MAX,
         ) {
             return Err(Status::permission_denied(
                 "missing dst.namespace write permissions",
@@ -272,13 +275,14 @@ impl QueryService for GraphService {
             return Err(Status::invalid_argument("dst.id must be set"));
         }
 
-        if !graph.has(
+        if !graph.has_recursive(
             ("themis_key", &*api_key),
             "read",
             ("themis_ns", &*req_dst.namespace),
+            u32::MAX,
         ) {
             return Err(Status::permission_denied(
-                "missing dst.namespace write permissions",
+                "missing dst.namespace read permissions",
             ))?;
         }
 
