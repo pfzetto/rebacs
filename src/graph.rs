@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::{
         hash_map::{Iter, IterMut},
         BinaryHeap, HashMap, HashSet,
@@ -33,12 +34,12 @@ pub struct ObjectRef(pub u32);
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug, Deserialize, Serialize)]
 pub enum ObjectOrSet {
-    Object(ObjectRef),
-    Set((ObjectRef, Relation)),
+    Object(Object),
+    Set((Object, Relation)),
 }
 
 #[derive(Hash, PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
-pub struct Relation(String);
+pub struct Relation(pub String);
 
 #[derive(PartialEq, Eq, Clone, Hash, Serialize, Deserialize, Debug)]
 pub struct ObjectRelation(pub ObjectRef, pub Relation);
@@ -53,7 +54,7 @@ impl Object {
 }
 
 impl ObjectOrSet {
-    pub fn object_ref(&self) -> &ObjectRef {
+    pub fn object(&self) -> &Object {
         match self {
             ObjectOrSet::Object(obj) => obj,
             ObjectOrSet::Set((obj, _)) => obj,
@@ -67,14 +68,14 @@ impl ObjectOrSet {
     }
 }
 
-impl From<ObjectRef> for ObjectOrSet {
-    fn from(value: ObjectRef) -> Self {
+impl From<Object> for ObjectOrSet {
+    fn from(value: Object) -> Self {
         Self::Object(value)
     }
 }
 
-impl From<(ObjectRef, &str)> for ObjectOrSet {
-    fn from(value: (ObjectRef, &str)) -> Self {
+impl From<(Object, &str)> for ObjectOrSet {
+    fn from(value: (Object, &str)) -> Self {
         Self::Set((value.0, Relation::new(value.1)))
     }
 }
@@ -102,6 +103,27 @@ impl From<(ObjectRef, &str)> for ObjectRelation {
         Self(value.0, Relation::new(value.1))
     }
 }
+impl From<(&str, &str)> for Object {
+    fn from((namespace, id): (&str, &str)) -> Self {
+        Self {
+            namespace: namespace.to_string(),
+            id: id.to_string(),
+        }
+    }
+}
+impl From<(&String, &String)> for Object {
+    fn from((namespace, id): (&String, &String)) -> Self {
+        Self {
+            namespace: namespace.to_string(),
+            id: id.to_string(),
+        }
+    }
+}
+impl From<(String, String)> for Object {
+    fn from((namespace, id): (String, String)) -> Self {
+        Self { namespace, id }
+    }
+}
 
 impl Graph {
     pub fn get_node(&self, namespace: &str, id: &str) -> Option<ObjectRef> {
@@ -110,29 +132,86 @@ impl Graph {
     pub fn object_from_ref(&self, obj: &ObjectRef) -> Object {
         self.nodes.get_by_b(obj).unwrap().clone()
     }
-    pub fn add_node(&mut self, node: Object) -> ObjectRef {
+    pub fn get_or_add_node(&mut self, namespace: &str, id: &str) -> ObjectRef {
+        if let Some(node) = self.get_node(namespace, id) {
+            node
+        } else {
+            self.add_node((namespace, id))
+        }
+    }
+    pub fn add_node(&mut self, node: impl Into<Object>) -> ObjectRef {
         let obj_ref = ObjectRef(self.counter);
-        self.nodes.insert(node, obj_ref);
+        self.nodes.insert(node.into(), obj_ref);
         self.counter += 1;
         obj_ref
     }
-    pub fn remove_node(&mut self, node: Object) {
+    pub fn remove_node(&mut self, node: impl Into<Object>) {
+        let node = node.into();
         let index = self.nodes.remove_by_a(&node);
         if let Some(index) = index {
             self.edges.remove_by_c(&index);
-            self.edges.get_by_a(&ObjectOrSet::Object(*index));
+            //self.edges.get_by_a(&ObjectOrSet::Object(*index));
             //TODO: remove edges with ObjectOrSet::Set
+        }
+    }
+    pub fn remove_node_by_ref(&mut self, node: impl Into<ObjectRef>) {
+        let node = node.into();
+        let index = self.nodes.remove_by_b(&node);
+        if index.is_some() {
+            self.edges.remove_by_c(&node);
+
+            //let edges = self
+            //    .edges
+            //    .left_to_right
+            //    .keys()
+            //    .filter(|x| *x.object_ref() == node)
+            //    .map(|x| (**x).clone())
+            //    .collect::<Vec<ObjectOrSet>>();
+            //for edge in edges {
+            //    self.edges.remove_by_a(&edge);
+            //}
         }
     }
 
     pub fn has_relation(&self, src: ObjectOrSet, dst: ObjectRelation) -> bool {
         self.edges.has(&src, &dst.1, &dst.0)
     }
-    pub fn add_relation(&mut self, src: ObjectOrSet, dst: ObjectRelation) {
-        self.edges.insert(src, dst.1, dst.0);
+    pub fn add_relation(&mut self, src: impl Into<ObjectOrSet>, dst: impl Into<ObjectRelation>) {
+        let dst = dst.into();
+        self.edges.insert(src.into(), dst.1, dst.0);
     }
-    pub fn remove_relation(&mut self, src: ObjectOrSet, dst: ObjectRelation) {
+    pub fn remove_relation(&mut self, src: impl Into<ObjectOrSet>, dst: impl Into<ObjectRelation>) {
+        let dst = dst.into();
+        self.edges.remove(&src.into(), &dst.1, &dst.0);
+    }
+    pub fn remove_relation_and_residual_node(
+        &mut self,
+        src: impl Into<ObjectOrSet>,
+        dst: impl Into<ObjectRelation>,
+    ) {
+        let src = src.into();
+        let dst = dst.into();
         self.edges.remove(&src, &dst.1, &dst.0);
+
+        //if self.edges.get_by_c(src.object_ref()).is_empty()
+        //    && !self
+        //        .edges
+        //        .left_to_right
+        //        .keys()
+        //        .any(|x| x.object_ref() == src.object_ref())
+        //{
+        //    self.remove_node_by_ref(*src.object_ref());
+        //}
+
+        //if self.edges.get_by_c(&dst.0).is_empty()
+        //    && !self
+        //        .edges
+        //        .left_to_right
+        //        .keys()
+        //        .any(|x| *x.object_ref() == dst.0)
+        //{
+        //    self.remove_node_by_ref(dst.0);
+        //}
     }
 
     pub fn is_related_to(
@@ -158,87 +237,88 @@ impl Graph {
             q.push(ObjectRelationDist(1, neighbor.clone()));
         }
 
-        while let Some(ObjectRelationDist(node_dist, node)) = q.pop() {
-            let node_dist = node_dist + 1;
-            let node = ObjectOrSet::Set((node.0, node.1));
-            for neighbor in self
-                .edges
-                .get_by_a(&node)
-                .iter()
-                .flat_map(|(r, m)| m.iter().map(|x| ObjectRelation(**x, (**r).clone())))
-            {
-                if neighbor == dst {
-                    return true;
-                }
-                if let Some(existing_node_dist) = dist.get(&neighbor) {
-                    if *existing_node_dist < node_dist {
-                        continue;
-                    }
-                }
-                dist.insert(neighbor.clone(), node_dist);
-                q.push(ObjectRelationDist(node_dist, neighbor.clone()));
-            }
-        }
+        //while let Some(ObjectRelationDist(node_dist, node)) = q.pop() {
+        //    let node_dist = node_dist + 1;
+        //    let node = ObjectOrSet::Set((node.0, node.1));
+        //    for neighbor in self
+        //        .edges
+        //        .get_by_a(&node)
+        //        .iter()
+        //        .flat_map(|(r, m)| m.iter().map(|x| ObjectRelation(**x, (**r).clone())))
+        //    {
+        //        if neighbor == dst {
+        //            return true;
+        //        }
+        //        if let Some(existing_node_dist) = dist.get(&neighbor) {
+        //            if *existing_node_dist < node_dist {
+        //                continue;
+        //            }
+        //        }
+        //        dist.insert(neighbor.clone(), node_dist);
+        //        q.push(ObjectRelationDist(node_dist, neighbor.clone()));
+        //    }
+        //}
 
         false
     }
     pub fn related_to(&self, dst: ObjectRef, relation: Relation) -> HashSet<ObjectRef> {
-        let mut relation_sets = vec![];
-        let mut relations: HashSet<ObjectRef> = HashSet::new();
-        for obj in self.edges.get_by_cb(&dst, &relation) {
-            match obj {
-                ObjectOrSet::Object(obj) => {
-                    relations.insert(*obj);
-                }
-                ObjectOrSet::Set(set) => relation_sets.push(set),
-            }
-        }
-        while let Some(set) = relation_sets.pop() {
-            for obj in self.edges.get_by_cb(&set.0, &set.1) {
-                match obj {
-                    ObjectOrSet::Object(obj) => {
-                        relations.insert(*obj);
-                    }
-                    ObjectOrSet::Set(set) => relation_sets.push(set),
-                }
-            }
-        }
-        relations
+        //let mut relation_sets = vec![];
+        //let mut relations: HashSet<ObjectRef> = HashSet::new();
+        //for obj in self.edges.get_by_cb(&dst, &relation) {
+        //    match obj {
+        //        ObjectOrSet::Object(obj) => {
+        //            relations.insert(*obj);
+        //        }
+        //        ObjectOrSet::Set(set) => relation_sets.push(set),
+        //    }
+        //}
+        //while let Some(set) = relation_sets.pop() {
+        //    for obj in self.edges.get_by_cb(&set.0, &set.1) {
+        //        match obj {
+        //            ObjectOrSet::Object(obj) => {
+        //                relations.insert(*obj);
+        //            }
+        //            ObjectOrSet::Set(set) => relation_sets.push(set),
+        //        }
+        //    }
+        //}
+        //relations
+        todo!()
     }
     pub fn relations(&self, src: impl Into<ObjectRelation>) -> HashSet<ObjectRef> {
-        let src: ObjectRelation = src.into();
+        //let src: ObjectRelation = src.into();
 
-        let mut visited = HashSet::new();
-        let mut relation_sets = vec![];
-        let mut relations = HashSet::new();
+        //let mut visited = HashSet::new();
+        //let mut relation_sets = vec![];
+        //let mut relations = HashSet::new();
 
-        for (rel, neighbors) in self.edges.get_by_a(&ObjectOrSet::Object(src.0)) {
-            for neighbor in neighbors {
-                if *rel == src.1 {
-                    relations.insert(*neighbor);
-                }
-                relation_sets.push((rel, neighbor));
-            }
-        }
+        //for (rel, neighbors) in self.edges.get_by_a(&ObjectOrSet::Object(src.0)) {
+        //    for neighbor in neighbors {
+        //        if *rel == src.1 {
+        //            relations.insert(*neighbor);
+        //        }
+        //        relation_sets.push((rel, neighbor));
+        //    }
+        //}
 
-        while let Some((rel, obj_ref)) = relation_sets.pop() {
-            if !visited.contains(&(rel, obj_ref)) {
-                for (rel, neighbors) in self
-                    .edges
-                    .get_by_a(&ObjectOrSet::Set((*obj_ref, (*rel).clone())))
-                {
-                    for neighbor in neighbors {
-                        if *rel == src.1 {
-                            relations.insert(*neighbor);
-                        }
-                        relation_sets.push((rel, neighbor));
-                    }
-                }
-                visited.insert((rel, obj_ref));
-            }
-        }
-
-        relations
+        //while let Some((rel, obj_ref)) = relation_sets.pop() {
+        //    if !visited.contains(&(rel, obj_ref)) {
+        //        for (rel, neighbors) in self
+        //            .edges
+        //            .get_by_a(&ObjectOrSet::Set((*obj_ref, (*rel).clone())))
+        //        {
+        //            for neighbor in neighbors {
+        //                if *rel == src.1 {
+        //                    relations.insert(*neighbor);
+        //                }
+        //                relation_sets.push((rel, neighbor));
+        //            }
+        //        }
+        //        visited.insert((rel, obj_ref));
+        //    }
+        //}
+        //relations
+        todo!()
     }
 
     pub async fn to_file(&self, file: &mut File) {
@@ -247,33 +327,33 @@ impl Graph {
             file.write_all(format!("[{}:{}]\n", &obj.namespace, &obj.id).as_bytes())
                 .await
                 .unwrap();
-            for (rel, arr) in self.edges.get_by_c(obj_ref.as_ref()) {
-                let arr = arr
-                    .iter()
-                    .filter_map(|x| {
-                        let rel_obj_ref = x.object_ref();
-                        self.nodes.get_by_b(rel_obj_ref).map(|rel_obj| {
-                            let (namespace, id) = (&rel_obj.namespace, &rel_obj.id);
+            //for (rel, arr) in self.edges.get_by_c(obj_ref.as_ref()) {
+            //    let arr = arr
+            //        .iter()
+            //        .filter_map(|x| {
+            //            let rel_obj_ref = x.object_ref();
+            //            self.nodes.get_by_b(rel_obj_ref).map(|rel_obj| {
+            //                let (namespace, id) = (&rel_obj.namespace, &rel_obj.id);
 
-                            if *namespace == obj.namespace && *id == obj.id {
-                                match x.relation() {
-                                    None => "self".to_string(),
-                                    Some(rel) => format!("self#{}", &rel.0),
-                                }
-                            } else {
-                                match x.relation() {
-                                    None => format!("{}:{}", &namespace, &id),
-                                    Some(rel) => format!("{}:{}#{}", &namespace, &id, &rel.0),
-                                }
-                            }
-                        })
-                    })
-                    .reduce(|acc, e| acc + ", " + &e)
-                    .unwrap_or_default();
-                file.write_all(format!("{} = [{}]\n", &rel.0, &arr).as_bytes())
-                    .await
-                    .unwrap();
-            }
+            //                if *namespace == obj.namespace && *id == obj.id {
+            //                    match x.relation() {
+            //                        None => "self".to_string(),
+            //                        Some(rel) => format!("self#{}", &rel.0),
+            //                    }
+            //                } else {
+            //                    match x.relation() {
+            //                        None => format!("{}:{}", &namespace, &id),
+            //                        Some(rel) => format!("{}:{}#{}", &namespace, &id, &rel.0),
+            //                    }
+            //                }
+            //            })
+            //        })
+            //        .reduce(|acc, e| acc + ", " + &e)
+            //        .unwrap_or_default();
+            //    file.write_all(format!("{} = [{}]\n", &rel.0, &arr).as_bytes())
+            //        .await
+            //        .unwrap();
+            //}
             file.write_all("\n".as_bytes()).await.unwrap();
         }
     }
@@ -339,19 +419,19 @@ impl Graph {
             }
         }
 
-        for relation in relations {
-            let src = match relation.2 {
-                Some(rel) => {
-                    let obj = graph.get_node(&relation.0, &relation.1).unwrap();
-                    ObjectOrSet::Set((obj, Relation::new(&rel)))
-                }
-                None => {
-                    let obj = graph.get_node(&relation.0, &relation.1).unwrap();
-                    ObjectOrSet::Object(obj)
-                }
-            };
-            graph.add_relation(src, ObjectRelation(relation.3, Relation(relation.4)));
-        }
+        //for relation in relations {
+        //    let src = match relation.2 {
+        //        Some(rel) => {
+        //            let obj = graph.get_node(&relation.0, &relation.1).unwrap();
+        //            ObjectOrSet::Set((obj, Relation::new(&rel)))
+        //        }
+        //        None => {
+        //            let obj = graph.get_node(&relation.0, &relation.1).unwrap();
+        //            ObjectOrSet::Object(obj)
+        //        }
+        //    };
+        //    graph.add_relation(src, ObjectRelation(relation.3, Relation(relation.4)));
+        //}
 
         graph
     }
@@ -596,5 +676,60 @@ impl<A, B, C> Default for BidThreeMap<A, B, C> {
             left_to_right: Default::default(),
             right_to_left: Default::default(),
         }
+    }
+}
+
+//impl Ord for ObjectOrSet {
+//    fn cmp(&self, other: &Self) -> Ordering {}
+//}
+//
+//impl Ord for ObjectRef {}cmp
+
+impl PartialOrd for Relation {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.0.partial_cmp(&other.0)
+    }
+}
+impl Ord for Relation {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0.cmp(&other.0)
+    }
+}
+
+impl PartialOrd for ObjectOrSet {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match (
+            self.object().partial_cmp(other.object()),
+            self.relation(),
+            other.relation(),
+        ) {
+            (Some(Ordering::Equal), Some(self_rel), Some(other_rel)) => {
+                self_rel.partial_cmp(other_rel)
+            }
+            (ord, _, _) => ord,
+        }
+    }
+}
+impl Ord for ObjectOrSet {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.object()
+            .cmp(other.object())
+            .then(self.relation().cmp(&other.relation()))
+    }
+}
+
+impl PartialOrd for Object {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        match self.namespace.partial_cmp(&other.namespace) {
+            Some(core::cmp::Ordering::Equal) => self.id.partial_cmp(&other.id),
+            ord => ord,
+        }
+    }
+}
+impl Ord for Object {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.namespace
+            .cmp(&other.namespace)
+            .then(self.id.cmp(&other.id))
     }
 }

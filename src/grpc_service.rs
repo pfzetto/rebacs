@@ -8,106 +8,18 @@ use tokio::sync::Mutex;
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status};
 
-use crate::graph::{self, Graph, ObjectRelation};
+use crate::relation_set::{ObjectOrSet, RelationSet};
 use crate::themis_proto::{
-    object_service_server::ObjectService, query_service_server::QueryService, relation::Src,
-    relation_service_server::RelationService, Empty, ExistsResponse, GetRelatedToResponse,
-    GetRelationsRequest, GetRelationsResponse, IsRelatedToResponse, Object, Relation, Set,
+    query_service_server::QueryService, relation::Src, relation_service_server::RelationService,
+    Empty, ExistsResponse, GetRelatedToResponse, GetRelationsRequest, GetRelationsResponse,
+    IsRelatedToResponse, Relation, Set,
 };
 
 #[derive(Clone)]
 pub struct GraphService {
     pub api_keys: Arc<Mutex<HashMap<String, String>>>,
-    pub graph: Arc<Mutex<Graph>>,
+    pub graph: Arc<Mutex<RelationSet>>,
     pub save_trigger: Sender<()>,
-}
-
-#[tonic::async_trait]
-impl ObjectService for GraphService {
-    async fn create(&self, request: Request<Object>) -> Result<Response<Empty>, Status> {
-        let mut graph = self.graph.lock().await;
-
-        authenticate(
-            request.metadata(),
-            &graph,
-            &self.api_keys,
-            &request.get_ref().namespace,
-            "write",
-        )
-        .await?;
-
-        if request.get_ref().namespace.is_empty() || request.get_ref().id.is_empty() {
-            return Err(Status::invalid_argument("namespace and id must be set"));
-        }
-
-        graph.add_node(graph::Object::new(
-            &request.get_ref().namespace,
-            &request.get_ref().id,
-        ));
-
-        info!(
-            "created object {}:{}",
-            &request.get_ref().namespace,
-            &request.get_ref().id
-        );
-
-        self.save_trigger.send(()).await.unwrap();
-
-        Ok(Response::new(Empty {}))
-    }
-    async fn delete(&self, request: Request<Object>) -> Result<Response<Empty>, Status> {
-        let mut graph = self.graph.lock().await;
-
-        authenticate(
-            request.metadata(),
-            &graph,
-            &self.api_keys,
-            &request.get_ref().namespace,
-            "write",
-        )
-        .await?;
-
-        if request.get_ref().namespace.is_empty() || request.get_ref().id.is_empty() {
-            return Err(Status::invalid_argument("namespace and id must be set"));
-        }
-
-        graph.remove_node(graph::Object::new(
-            &request.get_ref().namespace,
-            &request.get_ref().id,
-        ));
-
-        info!(
-            "removed object {}:{}",
-            &request.get_ref().namespace,
-            &request.get_ref().id
-        );
-
-        self.save_trigger.send(()).await.unwrap();
-
-        Ok(Response::new(Empty {}))
-    }
-    async fn exists(&self, request: Request<Object>) -> Result<Response<ExistsResponse>, Status> {
-        let graph = self.graph.lock().await;
-
-        authenticate(
-            request.metadata(),
-            &graph,
-            &self.api_keys,
-            &request.get_ref().namespace,
-            "read",
-        )
-        .await?;
-
-        if request.get_ref().namespace.is_empty() || request.get_ref().id.is_empty() {
-            return Err(Status::invalid_argument("namespace and id must be set"));
-        }
-
-        let exists = graph
-            .get_node(&request.get_ref().namespace, &request.get_ref().id)
-            .is_some();
-
-        Ok(Response::new(ExistsResponse { exists }))
-    }
 }
 
 #[tonic::async_trait]
@@ -115,18 +27,72 @@ impl RelationService for GraphService {
     async fn create(&self, request: Request<Relation>) -> Result<Response<Empty>, Status> {
         let mut graph = self.graph.lock().await;
 
-        let (src, dst, dst_namespace) = transform_relation(request.get_ref(), &graph)?;
+        let api_key = api_key_from_req(request.metadata(), &self.api_keys).await?;
 
-        authenticate(
-            request.metadata(),
-            &graph,
-            &self.api_keys,
-            &dst_namespace,
+        let req_src = request
+            .get_ref()
+            .src
+            .as_ref()
+            .ok_or(Status::invalid_argument("src must be set"))?;
+        let req_dst = request
+            .get_ref()
+            .dst
+            .as_ref()
+            .ok_or(Status::invalid_argument("dst must be set"))?;
+        let req_rel = &request.get_ref().relation;
+
+        if req_rel.is_empty() {
+            return Err(Status::invalid_argument("relation must be set"));
+        }
+        if req_dst.namespace.is_empty() {
+            return Err(Status::invalid_argument("dst.namespace must be set"));
+        }
+        if req_dst.id.is_empty() {
+            return Err(Status::invalid_argument("dst.id must be set"));
+        }
+
+        if !graph.has(
+            ("themis_key", &*api_key),
             "write",
-        )
-        .await?;
+            ("themis_ns", &*req_dst.namespace),
+        ) {
+            return Err(Status::permission_denied(
+                "missing dst.namespace write permissions",
+            ))?;
+        }
 
-        graph.add_relation(src, dst);
+        let src: Result<ObjectOrSet, Status> = match req_src {
+            Src::SrcObj(obj) => {
+                if obj.namespace.is_empty() {
+                    return Err(Status::invalid_argument("src.namespace must be set"));
+                }
+                if obj.id.is_empty() {
+                    return Err(Status::invalid_argument("src.id must be set"));
+                }
+
+                Ok((&*obj.namespace, &*obj.id).into())
+            }
+            Src::SrcSet(set) => {
+                if set.namespace.is_empty() {
+                    return Err(Status::invalid_argument("src.namespace must be set"));
+                }
+                if set.id.is_empty() {
+                    return Err(Status::invalid_argument("src.id must be set"));
+                }
+                if set.relation.is_empty() {
+                    return Err(Status::invalid_argument("src.relation must be set"));
+                }
+
+                Ok((&*set.namespace, &*set.id, &*set.relation).into())
+            }
+        };
+        let src = src?;
+
+        graph.insert(
+            src.clone(),
+            req_rel.clone(),
+            (req_dst.namespace.clone(), req_dst.id.clone()),
+        );
 
         info!("created relation");
 
@@ -137,20 +103,69 @@ impl RelationService for GraphService {
     async fn delete(&self, request: Request<Relation>) -> Result<Response<Empty>, Status> {
         let mut graph = self.graph.lock().await;
 
-        let (src, dst, dst_namespace) = transform_relation(request.get_ref(), &graph)?;
+        let api_key = api_key_from_req(request.metadata(), &self.api_keys).await?;
 
-        authenticate(
-            request.metadata(),
-            &graph,
-            &self.api_keys,
-            &dst_namespace,
+        let req_src = request
+            .get_ref()
+            .src
+            .as_ref()
+            .ok_or(Status::invalid_argument("src must be set"))?;
+        let req_dst = request
+            .get_ref()
+            .dst
+            .as_ref()
+            .ok_or(Status::invalid_argument("dst must be set"))?;
+        let req_rel = &request.get_ref().relation;
+
+        if req_rel.is_empty() {
+            return Err(Status::invalid_argument("relation must be set"));
+        }
+        if req_dst.namespace.is_empty() {
+            return Err(Status::invalid_argument("dst.namespace must be set"));
+        }
+        if req_dst.id.is_empty() {
+            return Err(Status::invalid_argument("dst.id must be set"));
+        }
+
+        if !graph.has(
+            ("themis_key", &*api_key),
             "write",
-        )
-        .await?;
+            ("themis_ns", &*req_dst.namespace),
+        ) {
+            return Err(Status::permission_denied(
+                "missing dst.namespace write permissions",
+            ))?;
+        }
+        let src: Result<ObjectOrSet, Status> = match req_src {
+            Src::SrcObj(obj) => {
+                if obj.namespace.is_empty() {
+                    return Err(Status::invalid_argument("src.namespace must be set"));
+                }
+                if obj.id.is_empty() {
+                    return Err(Status::invalid_argument("src.id must be set"));
+                }
 
-        graph.remove_relation(src, dst);
+                Ok((&*obj.namespace, &*obj.id).into())
+            }
+            Src::SrcSet(set) => {
+                if set.namespace.is_empty() {
+                    return Err(Status::invalid_argument("src.namespace must be set"));
+                }
+                if set.id.is_empty() {
+                    return Err(Status::invalid_argument("src.id must be set"));
+                }
+                if set.relation.is_empty() {
+                    return Err(Status::invalid_argument("src.relation must be set"));
+                }
 
-        info!("removed relation relation");
+                Ok((&*set.namespace, &*set.id, &*set.relation).into())
+            }
+        };
+        let src = src?;
+
+        graph.remove(src, req_rel.as_str(), (&*req_dst.namespace, &*req_dst.id));
+
+        info!("deleted relation");
 
         self.save_trigger.send(()).await.unwrap();
 
@@ -159,18 +174,67 @@ impl RelationService for GraphService {
     async fn exists(&self, request: Request<Relation>) -> Result<Response<ExistsResponse>, Status> {
         let graph = self.graph.lock().await;
 
-        let (src, dst, dst_namespace) = transform_relation(request.get_ref(), &graph)?;
+        let api_key = api_key_from_req(request.metadata(), &self.api_keys).await?;
 
-        authenticate(
-            request.metadata(),
-            &graph,
-            &self.api_keys,
-            &dst_namespace,
+        let req_src = request
+            .get_ref()
+            .src
+            .as_ref()
+            .ok_or(Status::invalid_argument("src must be set"))?;
+        let req_dst = request
+            .get_ref()
+            .dst
+            .as_ref()
+            .ok_or(Status::invalid_argument("dst must be set"))?;
+        let req_rel = &request.get_ref().relation;
+
+        if req_rel.is_empty() {
+            return Err(Status::invalid_argument("relation must be set"));
+        }
+        if req_dst.namespace.is_empty() {
+            return Err(Status::invalid_argument("dst.namespace must be set"));
+        }
+        if req_dst.id.is_empty() {
+            return Err(Status::invalid_argument("dst.id must be set"));
+        }
+
+        if !graph.has(
+            ("themis_key", &*api_key),
             "read",
-        )
-        .await?;
+            ("themis_ns", &*req_dst.namespace),
+        ) {
+            return Err(Status::permission_denied(
+                "missing dst.namespace write permissions",
+            ))?;
+        }
+        let src: Result<ObjectOrSet, Status> = match req_src {
+            Src::SrcObj(obj) => {
+                if obj.namespace.is_empty() {
+                    return Err(Status::invalid_argument("src.namespace must be set"));
+                }
+                if obj.id.is_empty() {
+                    return Err(Status::invalid_argument("src.id must be set"));
+                }
 
-        let exists = graph.has_relation(src, dst);
+                Ok((&*obj.namespace, &*obj.id).into())
+            }
+            Src::SrcSet(set) => {
+                if set.namespace.is_empty() {
+                    return Err(Status::invalid_argument("src.namespace must be set"));
+                }
+                if set.id.is_empty() {
+                    return Err(Status::invalid_argument("src.id must be set"));
+                }
+                if set.relation.is_empty() {
+                    return Err(Status::invalid_argument("src.relation must be set"));
+                }
+
+                Ok((&*set.namespace, &*set.id, &*set.relation).into())
+            }
+        };
+        let src = src?;
+
+        let exists = graph.has(src, req_rel.as_str(), (&*req_dst.namespace, &*req_dst.id));
 
         Ok(Response::new(ExistsResponse { exists }))
     }
@@ -184,11 +248,73 @@ impl QueryService for GraphService {
     ) -> Result<Response<IsRelatedToResponse>, Status> {
         let graph = self.graph.lock().await;
 
-        let related = if let Ok((src, dst, _)) = transform_relation(request.get_ref(), &graph) {
-            graph.is_related_to(src, dst)
-        } else {
-            false
+        let api_key = api_key_from_req(request.metadata(), &self.api_keys).await?;
+
+        let req_src = request
+            .get_ref()
+            .src
+            .as_ref()
+            .ok_or(Status::invalid_argument("src must be set"))?;
+        let req_dst = request
+            .get_ref()
+            .dst
+            .as_ref()
+            .ok_or(Status::invalid_argument("dst must be set"))?;
+        let req_rel = &request.get_ref().relation;
+
+        if req_rel.is_empty() {
+            return Err(Status::invalid_argument("relation must be set"));
+        }
+        if req_dst.namespace.is_empty() {
+            return Err(Status::invalid_argument("dst.namespace must be set"));
+        }
+        if req_dst.id.is_empty() {
+            return Err(Status::invalid_argument("dst.id must be set"));
+        }
+
+        if !graph.has(
+            ("themis_key", &*api_key),
+            "read",
+            ("themis_ns", &*req_dst.namespace),
+        ) {
+            return Err(Status::permission_denied(
+                "missing dst.namespace write permissions",
+            ))?;
+        }
+
+        let src: Result<ObjectOrSet, Status> = match req_src {
+            Src::SrcObj(obj) => {
+                if obj.namespace.is_empty() {
+                    return Err(Status::invalid_argument("src.namespace must be set"));
+                }
+                if obj.id.is_empty() {
+                    return Err(Status::invalid_argument("src.id must be set"));
+                }
+
+                Ok((&*obj.namespace, &*obj.id).into())
+            }
+            Src::SrcSet(set) => {
+                if set.namespace.is_empty() {
+                    return Err(Status::invalid_argument("src.namespace must be set"));
+                }
+                if set.id.is_empty() {
+                    return Err(Status::invalid_argument("src.id must be set"));
+                }
+                if set.relation.is_empty() {
+                    return Err(Status::invalid_argument("src.relation must be set"));
+                }
+
+                Ok((&*set.namespace, &*set.id, &*set.relation).into())
+            }
         };
+        let src = src?;
+
+        let related = graph.has_recursive(
+            src,
+            req_rel.as_str(),
+            (&*req_dst.namespace, &*req_dst.id),
+            u32::MAX,
+        );
 
         Ok(Response::new(IsRelatedToResponse { related }))
     }
@@ -196,127 +322,91 @@ impl QueryService for GraphService {
         &self,
         request: Request<Set>,
     ) -> Result<Response<GetRelatedToResponse>, Status> {
-        let graph = self.graph.lock().await;
+        //let graph = self.graph.lock().await;
 
-        authenticate(
-            request.metadata(),
-            &graph,
-            &self.api_keys,
-            &request.get_ref().namespace,
-            "read",
-        )
-        .await?;
+        //authenticate(
+        //    request.metadata(),
+        //    &graph,
+        //    &self.api_keys,
+        //    &request.get_ref().namespace,
+        //    "read",
+        //)
+        //.await?;
 
-        let obj = graph
-            .get_node(&request.get_ref().namespace, &request.get_ref().id)
-            .ok_or(Status::not_found("object not found"))?;
+        //let obj = graph
+        //    .get_node(&request.get_ref().namespace, &request.get_ref().id)
+        //    .ok_or(Status::not_found("object not found"))?;
 
-        let rel = graph::Relation::new(&request.get_ref().relation);
+        //let rel = graph::Relation::new(&request.get_ref().relation);
 
-        Ok(Response::new(GetRelatedToResponse {
-            objects: graph
-                .related_to(obj, rel)
-                .into_iter()
-                .map(|x| {
-                    let obj = graph.object_from_ref(&x);
-                    Object {
-                        namespace: obj.namespace.to_string(),
-                        id: obj.id,
-                    }
-                })
-                .collect::<Vec<_>>(),
-        }))
+        //Ok(Response::new(GetRelatedToResponse {
+        //    objects: graph
+        //        .related_to(obj, rel)
+        //        .into_iter()
+        //        .map(|x| {
+        //            let obj = graph.object_from_ref(&x);
+        //            Object {
+        //                namespace: obj.namespace.to_string(),
+        //                id: obj.id,
+        //            }
+        //        })
+        //        .collect::<Vec<_>>(),
+        //}))
+        todo!()
     }
     async fn get_relations(
         &self,
         request: Request<GetRelationsRequest>,
     ) -> Result<Response<GetRelationsResponse>, Status> {
-        let graph = self.graph.lock().await;
+        //let graph = self.graph.lock().await;
 
-        if request.get_ref().relation.is_empty() {
-            return Err(Status::invalid_argument("relation must be set"));
-        }
+        //if request.get_ref().relation.is_empty() {
+        //    return Err(Status::invalid_argument("relation must be set"));
+        //}
 
-        let obj = request
-            .get_ref()
-            .object
-            .as_ref()
-            .ok_or(Status::invalid_argument("object must be set"))?;
+        //let obj = request
+        //    .get_ref()
+        //    .object
+        //    .as_ref()
+        //    .ok_or(Status::invalid_argument("object must be set"))?;
 
-        authenticate(
-            request.metadata(),
-            &graph,
-            &self.api_keys,
-            &obj.namespace,
-            "read",
-        )
-        .await?;
+        //authenticate(
+        //    request.metadata(),
+        //    &graph,
+        //    &self.api_keys,
+        //    &obj.namespace,
+        //    "read",
+        //)
+        //.await?;
 
-        let obj = graph
-            .get_node(&obj.namespace, &obj.id)
-            .ok_or(Status::not_found("object not found"))?;
+        //let obj = graph
+        //    .get_node(&obj.namespace, &obj.id)
+        //    .ok_or(Status::not_found("object not found"))?;
 
-        Ok(Response::new(GetRelationsResponse {
-            objects: graph
-                .relations(ObjectRelation(
-                    obj,
-                    graph::Relation::new(&request.get_ref().relation),
-                ))
-                .into_iter()
-                .map(|x| {
-                    let obj = graph.object_from_ref(&x);
-                    Object {
-                        namespace: obj.namespace.to_string(),
-                        id: obj.id,
-                    }
-                })
-                .collect::<Vec<_>>(),
-        }))
+        //Ok(Response::new(GetRelationsResponse {
+        //    objects: graph
+        //        .relations(ObjectRelation(
+        //            obj,
+        //            graph::Relation::new(&request.get_ref().relation),
+        //        ))
+        //        .into_iter()
+        //        .map(|x| {
+        //            let obj = graph.object_from_ref(&x);
+        //            Object {
+        //                namespace: obj.namespace.to_string(),
+        //                id: obj.id,
+        //            }
+        //        })
+        //        .collect::<Vec<_>>(),
+        //}))
+        todo!()
     }
 }
 
-fn transform_relation(
-    rel: &Relation,
-    graph: &Graph,
-) -> Result<(graph::ObjectOrSet, graph::ObjectRelation, String), Status> {
-    let src = match rel
-        .src
-        .as_ref()
-        .ok_or(Status::invalid_argument("src must be set"))?
-    {
-        Src::SrcObj(object) => graph::ObjectOrSet::Object(
-            graph
-                .get_node(&object.namespace, &object.id)
-                .ok_or(Status::not_found("src object could not be found"))?,
-        ),
-        Src::SrcSet(set) => graph::ObjectOrSet::Set((
-            graph
-                .get_node(&set.namespace, &set.id)
-                .ok_or(Status::not_found("src object could not be found"))?,
-            graph::Relation::new(&set.relation),
-        )),
-    };
-
-    let dst = rel
-        .dst
-        .as_ref()
-        .ok_or(Status::invalid_argument("dst must be set"))?;
-    let dst_namespace = dst.namespace.to_string();
-    let dst = graph
-        .get_node(&dst.namespace, &dst.id)
-        .ok_or(Status::not_found("dst object could not be found"))?;
-    let dst = ObjectRelation(dst, graph::Relation::new(&rel.relation));
-
-    Ok((src, dst, dst_namespace))
-}
-
-async fn authenticate(
+async fn api_key_from_req(
     metadata: &MetadataMap,
-    graph: &Graph,
     api_keys: &Arc<Mutex<HashMap<String, String>>>,
-    namespace: &str,
-    relation: &str,
-) -> Result<(), Status> {
+) -> Result<String, Status> {
     let api_key = metadata
         .get("x-api-key")
         .map(|x| x.to_str().unwrap())
@@ -329,18 +419,5 @@ async fn authenticate(
     let api_key = api_keys
         .get(&api_key)
         .ok_or(Status::unauthenticated("api-key invalid"))?;
-
-    let api_key = graph
-        .get_node("themis_key", api_key)
-        .ok_or(Status::unauthenticated("api-key invalid"))?;
-
-    let ns_ref = graph
-        .get_node("themis_ns", namespace)
-        .ok_or(Status::permission_denied("no permission for namespace"))?;
-
-    if !graph.is_related_to(api_key, (ns_ref, graph::Relation::new(relation))) {
-        Err(Status::permission_denied("no permission for namespace"))
-    } else {
-        Ok(())
-    }
+    Ok(api_key.to_string())
 }

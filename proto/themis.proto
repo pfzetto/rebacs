@@ -1,12 +1,6 @@
 syntax = "proto3";
 package eu.zettoit.themis;
 
-service ObjectService{
-  rpc Create(Object) returns (Empty);
-  rpc Delete(Object) returns (Empty);
-  rpc Exists(Object) returns (ExistsResponse);
-}
-
 service RelationService {
   rpc Create(Relation) returns (Empty);
   rpc Delete(Relation) returns (Empty);

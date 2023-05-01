@@ -1,7 +1,10 @@
+#![feature(btree_cursors)]
+
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
-use graph::Graph;
 use grpc_service::GraphService;
+use relation_set::RelationSet;
+//use grpc_service::GraphService;
 use tokio::{
     fs::{self, File},
     io::{AsyncBufReadExt, BufReader},
@@ -10,13 +13,12 @@ use tokio::{
 };
 use tonic::transport::Server;
 
-pub mod graph;
 pub mod grpc_service;
+pub mod relation_set;
 pub mod themis_proto;
 
 use crate::themis_proto::{
-    object_service_server::ObjectServiceServer, query_service_server::QueryServiceServer,
-    relation_service_server::RelationServiceServer,
+    query_service_server::QueryServiceServer, relation_service_server::RelationServiceServer,
 };
 
 #[tokio::main]
@@ -38,9 +40,9 @@ async fn main() {
     }
 
     let graph = if let Ok(mut file) = File::open("graph.dat").await {
-        Graph::from_file(&mut file).await
+        RelationSet::from_file(&mut file).await
     } else {
-        Graph::default()
+        RelationSet::new()
     };
 
     let graph = Arc::new(Mutex::new(graph));
@@ -68,10 +70,9 @@ async fn main() {
     };
 
     Server::builder()
-        .add_service(ObjectServiceServer::new(graph_service.clone()))
         .add_service(RelationServiceServer::new(graph_service.clone()))
         .add_service(QueryServiceServer::new(graph_service))
-        .serve("0.0.0.0:50051".parse().unwrap())
+        .serve("[::]:50051".parse().unwrap())
         .await
         .unwrap()
 }
