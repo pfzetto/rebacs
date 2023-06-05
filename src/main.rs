@@ -14,10 +14,10 @@ use tokio::{
 use tonic::transport::Server;
 
 pub mod grpc_service;
+pub mod rebacs_proto;
 pub mod relation_set;
-pub mod themis_proto;
 
-use crate::themis_proto::{
+use crate::rebacs_proto::{
     query_service_server::QueryServiceServer, relation_service_server::RelationServiceServer,
 };
 

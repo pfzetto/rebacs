@@ -195,6 +195,9 @@ impl RelationSet {
 
         while let Some(distanced) = q.pop() {
             let node_dist = distanced.distance() + 1;
+            if node_dist > limit {
+                break;
+            }
             let node = ObjectOrSet::Set(((*distanced.0).clone(), (*distanced.1).clone()));
             for (nrel, ndst) in self
                 .src_to_dst
@@ -207,7 +210,7 @@ impl RelationSet {
                     return true;
                 }
                 if let Some(existing_node_dist) = dist.get(&*distanced) {
-                    if *existing_node_dist <= node_dist || node_dist >= limit {
+                    if *existing_node_dist <= node_dist {
                         continue;
                     }
                 }
@@ -216,6 +219,139 @@ impl RelationSet {
             }
         }
         false
+    }
+
+    pub fn related_to(
+        &self,
+        dst: impl Into<D>,
+        rel: Option<impl Into<R>>,
+        namespace: Option<&str>,
+        limit: u32,
+    ) -> Vec<(Relation, Object)> {
+        let rel = rel.map(|x| x.into());
+        let dst = dst.into();
+
+        let mut related: Vec<(Relation, Object)> = vec![];
+
+        let mut dist: HashMap<(Arc<Object>, Arc<Relation>), u32> = HashMap::new();
+        let mut q: BinaryHeap<Distanced<(Arc<Object>, Arc<Relation>)>> = BinaryHeap::new();
+
+        for (nrel, ndst) in self
+            .dst_to_src
+            .get(&dst)
+            .iter()
+            .flat_map(|x| x.iter())
+            .flat_map(|(r, d)| d.iter().map(|d| (r.clone(), d.clone())))
+        {
+            match &*ndst {
+                ObjectOrSet::Object(obj) => {
+                    if (rel.is_none() || rel.as_ref() == Some(&nrel))
+                        && (namespace.is_none() || namespace == Some(&obj.namespace))
+                    {
+                        related.push(((*nrel).clone(), obj.clone()));
+                    }
+                }
+                ObjectOrSet::Set((obj, rel)) => {
+                    let obj = Arc::new(obj.clone());
+                    let rel = Arc::new(rel.clone());
+                    dist.insert((obj.clone(), rel.clone()), 1);
+                    q.push(Distanced::one((obj, rel)));
+                }
+            }
+        }
+
+        while let Some(distanced) = q.pop() {
+            let node_dist = distanced.distance() + 1;
+            if node_dist > limit {
+                break;
+            }
+
+            for ndst in self
+                .dst_to_src
+                .get(&distanced.0)
+                .and_then(|x| x.get(&distanced.1))
+                .iter()
+                .flat_map(|x| x.iter())
+            {
+                match &**ndst {
+                    ObjectOrSet::Object(obj) => {
+                        if (rel.is_none() || rel.as_ref() == Some(&distanced.1))
+                            && (namespace.is_none() || namespace == Some(&obj.namespace))
+                        {
+                            related.push(((*distanced.1).clone(), obj.clone()));
+                        }
+                    }
+                    ObjectOrSet::Set((obj, rel)) => {
+                        let obj = Arc::new(obj.clone());
+                        let rel = Arc::new(rel.clone());
+                        dist.insert((obj.clone(), rel.clone()), node_dist);
+                        q.push(Distanced::one((obj, rel)));
+                    }
+                }
+            }
+        }
+
+        related
+    }
+
+    pub fn relations(
+        &self,
+        src: impl Into<S>,
+        rel: Option<impl Into<R>>,
+        namespace: Option<&str>,
+        limit: u32,
+    ) -> Vec<(Relation, Object)> {
+        let rel = rel.map(|x| x.into());
+        let src = src.into();
+
+        let mut related: Vec<(Relation, Object)> = vec![];
+
+        let mut dist: HashMap<Arc<ObjectOrSet>, u32> = HashMap::new();
+        let mut q: BinaryHeap<Distanced<Arc<ObjectOrSet>>> = BinaryHeap::new();
+
+        for (nrel, ndst) in self
+            .src_to_dst
+            .get(&src)
+            .iter()
+            .flat_map(|x| x.iter())
+            .flat_map(|(r, d)| d.iter().map(|d| (r.clone(), d.clone())))
+        {
+            if (rel.is_none() || rel.as_ref() == Some(&nrel))
+                && (namespace.is_none() || namespace == Some(&ndst.namespace))
+            {
+                related.push(((*nrel).clone(), (*ndst).clone()));
+            }
+            let obj = Arc::new(ObjectOrSet::Set(((*ndst).clone(), (*nrel).clone())));
+            dist.insert(obj.clone(), 1);
+            q.push(Distanced::one(obj));
+        }
+
+        while let Some(distanced) = q.pop() {
+            let node_dist = distanced.distance() + 1;
+            if node_dist > limit {
+                break;
+            }
+
+            for (nrel, ndsts) in self
+                .src_to_dst
+                .get(&*distanced)
+                .iter()
+                .flat_map(|x| x.iter())
+            {
+                for ndst in ndsts {
+                    if (rel.is_none() || rel.as_ref() == Some(nrel))
+                        && (namespace.is_none() || namespace == Some(&ndst.namespace))
+                    {
+                        related.push(((**nrel).clone(), (**ndst).clone()));
+                    }
+                    let obj = Arc::new(ObjectOrSet::Set(((**ndst).clone(), (**nrel).clone())));
+                    dist.insert(obj.clone(), node_dist);
+                    q.push(Distanced::one(obj));
+                }
+            }
+        }
+
+        related
     }
 
     pub async fn to_file(&self, file: &mut File) {

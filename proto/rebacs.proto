@@ -1,0 +1,95 @@
+syntax = "proto3";
+package eu.zettoit.rebacs;
+
+service RelationService {
+  rpc Create(RelationCreateReq) returns (RelationCreateRes);
+  rpc Delete(RelationDeleteReq) returns (RelationDeleteRes);
+  rpc Exists(RelationExistsReq) returns (RelationExistsRes);
+}
+
+service QueryService {
+  // check if one object or objectset is related to another by a relation
+  rpc IsRelatedTo(QueryIsRelatedToReq) returns (QueryIsRelatedToRes);
+
+  // get all objects that are related to one object by a relation
+  rpc GetRelated(QueryGetRelatedReq) returns (QueryGetRelatedRes);
+
+  // get all objects that the given object has a relation with
+  rpc GetRelations(QueryGetRelationsReq) returns (QueryGetRelationsRes);
+}
+
+message RelationCreateReq{
+  ObjectOrSet src = 1;
+  Object dst = 2;
+  string relation = 3;
+}
+message RelationCreateRes{}
+
+message RelationDeleteReq{
+  ObjectOrSet src = 1;
+  Object dst = 3;
+  string relation = 4;
+}
+message RelationDeleteRes{}
+
+message RelationExistsReq{
+  ObjectOrSet src = 1;
+  Object dst = 2;
+  string relation = 3;
+}
+message RelationExistsRes{
+  bool exists = 1;
+}
+
+message QueryIsRelatedToReq{
+  ObjectOrSet src = 1;
+  Object dst = 2;
+  string relation = 3;
+}
+message QueryIsRelatedToRes{
+  bool related = 1;
+}
+
+message QueryGetRelatedReq{
+  Object dst = 1;
+  optional string relation = 2;
+  optional string namespace = 3;
+  optional uint32 depth = 4;
+}
+message QueryGetRelatedRes{
+  repeated QueryGetRelatedItem objects = 1;
+}
+message QueryGetRelatedItem{
+  string relation = 1;
+  Object src = 2;
+}
+
+message QueryGetRelationsReq{
+  Object src = 1;
+  optional string relation = 2;
+  optional string namespace = 3;
+  optional uint32 depth = 4;
+}
+message QueryGetRelationsRes{
+  repeated QueryGetRelationsItem related = 1;
+}
+message QueryGetRelationsItem{
+  string relation = 1;
+  Object dst = 2;
+}
+
+message Object{
+  string namespace = 1;
+  string id = 2;
+}
+message Set{
+  string namespace = 1;
+  string id = 2;
+  string relation = 3;
+}
+
+message ObjectOrSet {
+  string namespace = 1;
+  string id = 2;
+  optional string relation = 3;
+}
