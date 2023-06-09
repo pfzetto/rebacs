@@ -15,6 +15,8 @@ cargo-build:
   image: rust:slim-bookworm
   before_script:
     - apt update && apt install protobuf-compiler -y
+    - rustup toolchain install nightly
+    - rustup default nightly
   script:
     - cargo build --release
   artifacts:
