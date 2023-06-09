@@ -1,0 +1,34 @@
+variables:
+  DOCKER_TLS_CERTDIR: ""
+  DOCKER_HOST: tcp://docker:2375
+
+services:
+  - name: docker:dind
+    entrypoint: ["dockerd-entrypoint.sh", "--tls=false"]
+
+stages:
+  - build
+  - pack
+
+cargo-build:
+  stage: build
+  image: rust:slim-bookworm
+  before_script:
+    - apt update && apt install protobuf-compiler -y
+  script:
+    - cargo build --release
+  artifacts:
+    paths:
+      - target/release/rebacs
+
+docker:
+  stage: pack
+  image: docker:latest
+  only:
+    - master
+  script:
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
+    - docker build --network host -t $CI_REGISTRY_IMAGE/master . -f Dockerfile
+    - docker push $CI_REGISTRY_IMAGE/master
+  dependencies:
+    - cargo-build
