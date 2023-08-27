@@ -119,7 +119,11 @@ impl RelationSet {
         let src = src.into();
         let dst = dst.into();
 
-        let src = self.nodes.read().await.get(&src).unwrap().clone();
+        let src = if let Some(src) = self.nodes.read().await.get(&src) {
+            src.clone()
+        } else {
+            return false;
+        };
 
         let src_neighbors = src
             .edges_out
