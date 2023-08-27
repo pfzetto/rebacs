@@ -1,399 +1,197 @@
 use std::{
+    borrow::Borrow,
     cmp::Ordering,
-    collections::{BTreeMap, BinaryHeap, HashMap, HashSet},
-    ops::{Bound, Deref},
+    collections::{BTreeSet, BinaryHeap, HashSet},
+    fmt::Debug,
+    hash::Hash,
+    ops::Deref,
     sync::Arc,
 };
 
-use compact_str::CompactString;
 use tokio::{
     fs::File,
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    sync::RwLock,
 };
 
-#[derive(Hash, PartialEq, Eq, Clone, Debug)]
-pub struct Object {
-    pub namespace: CompactString,
-    pub id: CompactString,
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NodeId {
+    pub namespace: String,
+    pub id: String,
+    pub relation: Option<String>,
 }
 
-#[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
-pub struct ObjectRef<'a> {
-    pub namespace: &'a str,
-    pub id: &'a str,
+pub struct Node {
+    pub id: NodeId,
+    pub edges_in: RwLock<Vec<Arc<Node>>>,
+    pub edges_out: RwLock<Vec<Arc<Node>>>,
 }
 
-#[derive(PartialEq, Eq, Hash, Clone, Debug)]
-pub enum ObjectOrSet {
-    Object(Object),
-    Set((Object, Relation)),
+#[derive(Debug, PartialEq, Eq)]
+struct Distanced<T> {
+    distance: u32,
+    data: T,
 }
-#[derive(Hash, PartialEq, Eq, Clone, Debug)]
-pub struct Relation(pub CompactString);
 
-type S = ObjectOrSet;
-type R = Relation;
-type D = Object;
-
+#[derive(Default)]
 pub struct RelationSet {
-    src_to_dst: BTreeMap<Arc<S>, HashMap<Arc<R>, HashSet<Arc<D>>>>,
-    dst_to_src: BTreeMap<Arc<D>, HashMap<Arc<R>, HashSet<Arc<S>>>>,
+    nodes: RwLock<BTreeSet<Arc<Node>>>,
 }
 
 impl RelationSet {
-    pub fn new() -> Self {
-        Self {
-            src_to_dst: BTreeMap::new(),
-            dst_to_src: BTreeMap::new(),
-        }
-    }
-
-    pub fn insert(&mut self, src: impl Into<S>, rel: impl Into<R>, dst: impl Into<D>) {
-        let src = Arc::new(src.into());
-        let rel = Arc::new(rel.into());
-        let dst = Arc::new(dst.into());
-
-        if let Some(rels_dsts) = self.src_to_dst.get_mut(&src) {
-            if let Some(dsts) = rels_dsts.get_mut(&rel) {
-                dsts.insert(dst.clone());
-            } else {
-                let mut dsts = HashSet::new();
-                dsts.insert(dst.clone());
-                rels_dsts.insert(rel.clone(), dsts);
-            }
-        } else {
-            let mut rels_dsts = HashMap::new();
-            let mut dsts = HashSet::new();
-            dsts.insert(dst.clone());
-            rels_dsts.insert(rel.clone(), dsts);
-            self.src_to_dst.insert(src.clone(), rels_dsts);
-        }
-
-        if let Some(rels_srcs) = self.dst_to_src.get_mut(&dst) {
-            if let Some(srcs) = rels_srcs.get_mut(&rel) {
-                srcs.insert(src.clone());
-            } else {
-                let mut srcs = HashSet::new();
-                srcs.insert(src.clone());
-                rels_srcs.insert(rel.clone(), srcs);
-            }
-        } else {
-            let mut rels_srcs = HashMap::new();
-            let mut srcs = HashSet::new();
-            srcs.insert(src.clone());
-            rels_srcs.insert(rel.clone(), srcs);
-            self.dst_to_src.insert(dst.clone(), rels_srcs);
-        }
-    }
-
-    pub fn remove(&mut self, src: impl Into<S>, rel: impl Into<R>, dst: impl Into<D>) {
+    pub async fn insert(&self, src: impl Into<NodeId>, dst: impl Into<NodeId>) {
         let src = src.into();
-        let rel = rel.into();
         let dst = dst.into();
 
-        if let Some(dsts) = self
-            .src_to_dst
-            .get_mut(&src)
-            .and_then(|rels_dsts| rels_dsts.get_mut(&rel))
-        {
-            dsts.remove(&dst);
-        }
+        let mut nodes = self.nodes.write().await;
 
-        if let Some(srcs) = self
-            .dst_to_src
-            .get_mut(&dst)
-            .and_then(|rels_srcs| rels_srcs.get_mut(&rel))
-        {
-            srcs.remove(&src);
-        }
-    }
-
-    pub fn remove_by_src(&mut self, src: &S) {
-        for (rel, dsts) in self.src_to_dst.remove(src).iter().flat_map(|x| x.iter()) {
-            for dst in dsts {
-                if let Some(srcs) = self
-                    .dst_to_src
-                    .get_mut(dst)
-                    .and_then(|rels_srcs| rels_srcs.get_mut(rel))
-                {
-                    srcs.remove(src);
-                }
+        let src_node = match nodes.get(&src) {
+            Some(node) => node.clone(),
+            None => {
+                let node = Arc::new(Node {
+                    id: src,
+                    edges_out: RwLock::new(vec![]),
+                    edges_in: RwLock::new(vec![]),
+                });
+                nodes.insert(node.clone());
+                node
             }
-        }
-    }
-
-    pub fn remove_by_dst(&mut self, dst: &D) {
-        for (rel, srcs) in self.dst_to_src.remove(dst).iter().flat_map(|x| x.iter()) {
-            for src in srcs {
-                if let Some(dsts) = self
-                    .src_to_dst
-                    .get_mut(src)
-                    .and_then(|rels_dsts| rels_dsts.get_mut(rel))
-                {
-                    dsts.remove(dst);
-                }
+        };
+        let dst_node = match nodes.get(&dst).cloned() {
+            Some(node) => node.clone(),
+            None => {
+                let node = Arc::new(Node {
+                    id: dst,
+                    edges_out: RwLock::new(vec![]),
+                    edges_in: RwLock::new(vec![]),
+                });
+                nodes.insert(node.clone());
+                node
             }
-        }
+        };
+        add_edge(src_node, dst_node).await;
     }
 
-    pub fn has(&self, src: impl Into<S>, rel: impl Into<R>, dst: impl Into<D>) -> bool {
+    pub async fn remove(&self, src: impl Into<NodeId>, dst: impl Into<NodeId>) {
         let src = src.into();
-        let rel = rel.into();
         let dst = dst.into();
 
-        self.src_to_dst
-            .get(&src)
-            .and_then(|rels_dsts| rels_dsts.get(&rel))
-            .and_then(|dsts| dsts.get(&dst))
-            .is_some()
+        let mut nodes = self.nodes.write().await;
+
+        let src = nodes.get(&src).cloned();
+        let dst = nodes.get(&dst).cloned();
+
+        if let (Some(src), Some(dst)) = (src, dst) {
+            src.edges_out.write().await.retain(|x| x != &dst);
+            dst.edges_in.write().await.retain(|x| x != &src);
+
+            if src.edges_in.read().await.is_empty() && src.edges_out.read().await.is_empty() {
+                nodes.remove(&src.id);
+            }
+            if dst.edges_in.read().await.is_empty() && dst.edges_out.read().await.is_empty() {
+                nodes.remove(&dst.id);
+            }
+        }
     }
 
-    pub fn has_object<'a>(&self, obj: impl Into<&'a Object>) -> bool {
-        let obj = obj.into();
-        let has_dst_obj = self.dst_to_src.contains_key(obj);
+    pub async fn has(&self, src: impl Into<NodeId>, dst: impl Into<NodeId>) -> bool {
+        let src = src.into();
+        let dst = dst.into();
 
-        let cursor = self
-            .src_to_dst
-            .lower_bound(Bound::Included(&ObjectOrSet::Object(obj.clone())));
-
-        let has_src_obj = if let Some(key) = cursor.key() {
-            obj.namespace == key.object().namespace && obj.id == key.object().id
-        } else {
-            false
+        let (src, dst) = {
+            let nodes = self.nodes.read().await;
+            (nodes.get(&src).cloned(), nodes.get(&dst).cloned())
         };
 
-        has_dst_obj || has_src_obj
+        if let (Some(src), Some(dst)) = (src, dst) {
+            src.edges_out.read().await.contains(&dst)
+        } else {
+            false
+        }
     }
 
-    pub fn has_recursive(
+    pub async fn has_recursive<'a>(
         &self,
-        src: impl Into<S>,
-        rel: impl Into<R>,
-        dst: impl Into<D>,
-        limit: u32,
+        src: impl Into<NodeId>,
+        dst: impl Into<NodeId>,
+        limit: Option<u32>,
     ) -> bool {
         let src = src.into();
-        let rel = rel.into();
         let dst = dst.into();
 
-        let mut dist: HashMap<(Arc<Object>, Arc<Relation>), u32> = HashMap::new();
-        let mut q: BinaryHeap<Distanced<(Arc<Object>, Arc<Relation>)>> = BinaryHeap::new();
+        let src = self.nodes.read().await.get(&src).unwrap().clone();
 
-        for (nrel, ndst) in self
-            .src_to_dst
-            .get(&src)
+        let src_neighbors = src
+            .edges_out
+            .read()
+            .await
             .iter()
-            .flat_map(|x| x.iter())
-            .flat_map(|(r, d)| d.iter().map(|d| (r.clone(), d.clone())))
-        {
-            if *nrel == rel && *ndst == dst {
-                return true;
-            }
-            dist.insert((ndst.clone(), nrel.clone()), 1);
-            q.push(Distanced::one((ndst, nrel)));
-        }
+            .map(|x| Distanced::one(x.clone()))
+            .collect::<Vec<_>>();
+
+        let mut q: BinaryHeap<Distanced<Arc<Node>>> = BinaryHeap::from(src_neighbors);
+        let mut visited: HashSet<Arc<Node>> = HashSet::new();
 
         while let Some(distanced) = q.pop() {
-            let node_dist = distanced.distance() + 1;
-            if node_dist > limit {
-                break;
+            if distanced.id == dst {
+                return true;
             }
-            let node = ObjectOrSet::Set(((*distanced.0).clone(), (*distanced.1).clone()));
-            for (nrel, ndst) in self
-                .src_to_dst
-                .get(&node)
-                .iter()
-                .flat_map(|x| x.iter())
-                .flat_map(|(r, d)| d.iter().map(|d| (r.clone(), d.clone())))
-            {
-                if *nrel == rel && *ndst == dst {
-                    return true;
+            if let Some(limit) = limit {
+                if distanced.distance() > limit {
+                    return false;
                 }
-                if let Some(existing_node_dist) = dist.get(&*distanced) {
-                    if *existing_node_dist <= node_dist {
-                        continue;
-                    }
-                }
-                dist.insert((ndst.clone(), nrel.clone()), node_dist);
-                q.push(Distanced::one((ndst, nrel)));
             }
+
+            for neighbor in distanced.edges_out.read().await.iter() {
+                if !visited.contains(neighbor) {
+                    q.push(Distanced::new(neighbor.clone(), distanced.distance() + 1))
+                }
+            }
+
+            visited.insert(distanced.clone());
         }
         false
     }
 
-    pub fn related_to(
-        &self,
-        dst: impl Into<D>,
-        rel: Option<impl Into<R>>,
-        namespace: Option<&str>,
-        limit: u32,
-    ) -> Vec<(Relation, Object)> {
-        let rel = rel.map(|x| x.into());
-        let dst = dst.into();
-
-        let mut related: Vec<(Relation, Object)> = vec![];
-
-        let mut dist: HashMap<(Arc<Object>, Arc<Relation>), u32> = HashMap::new();
-        let mut q: BinaryHeap<Distanced<(Arc<Object>, Arc<Relation>)>> = BinaryHeap::new();
-
-        for (nrel, ndst) in self
-            .dst_to_src
-            .get(&dst)
-            .iter()
-            .flat_map(|x| x.iter())
-            .flat_map(|(r, d)| d.iter().map(|d| (r.clone(), d.clone())))
-        {
-            match &*ndst {
-                ObjectOrSet::Object(obj) => {
-                    if (rel.is_none() || rel.as_ref() == Some(&nrel))
-                        && (namespace.is_none() || namespace == Some(&obj.namespace))
-                    {
-                        related.push(((*nrel).clone(), obj.clone()));
-                    }
-                }
-                ObjectOrSet::Set((obj, rel)) => {
-                    let obj = Arc::new(obj.clone());
-                    let rel = Arc::new(rel.clone());
-                    dist.insert((obj.clone(), rel.clone()), 1);
-                    q.push(Distanced::one((obj, rel)));
-                }
-            }
-        }
-
-        while let Some(distanced) = q.pop() {
-            let node_dist = distanced.distance() + 1;
-            if node_dist > limit {
-                break;
-            }
-
-            for ndst in self
-                .dst_to_src
-                .get(&distanced.0)
-                .and_then(|x| x.get(&distanced.1))
-                .iter()
-                .flat_map(|x| x.iter())
-            {
-                match &**ndst {
-                    ObjectOrSet::Object(obj) => {
-                        if (rel.is_none() || rel.as_ref() == Some(&distanced.1))
-                            && (namespace.is_none() || namespace == Some(&obj.namespace))
-                        {
-                            related.push(((*distanced.1).clone(), obj.clone()));
-                        }
-                    }
-                    ObjectOrSet::Set((obj, rel)) => {
-                        let obj = Arc::new(obj.clone());
-                        let rel = Arc::new(rel.clone());
-                        dist.insert((obj.clone(), rel.clone()), node_dist);
-                        q.push(Distanced::one((obj, rel)));
-                    }
-                }
-            }
-        }
-
-        related
-    }
-
-    pub fn relations(
-        &self,
-        src: impl Into<S>,
-        rel: Option<impl Into<R>>,
-        namespace: Option<&str>,
-        limit: u32,
-    ) -> Vec<(Relation, Object)> {
-        let rel = rel.map(|x| x.into());
-        let src = src.into();
-
-        let mut related: Vec<(Relation, Object)> = vec![];
-
-        let mut dist: HashMap<Arc<ObjectOrSet>, u32> = HashMap::new();
-        let mut q: BinaryHeap<Distanced<Arc<ObjectOrSet>>> = BinaryHeap::new();
-
-        for (nrel, ndst) in self
-            .src_to_dst
-            .get(&src)
-            .iter()
-            .flat_map(|x| x.iter())
-            .flat_map(|(r, d)| d.iter().map(|d| (r.clone(), d.clone())))
-        {
-            if (rel.is_none() || rel.as_ref() == Some(&nrel))
-                && (namespace.is_none() || namespace == Some(&ndst.namespace))
-            {
-                related.push(((*nrel).clone(), (*ndst).clone()));
-            }
-            let obj = Arc::new(ObjectOrSet::Set(((*ndst).clone(), (*nrel).clone())));
-            dist.insert(obj.clone(), 1);
-            q.push(Distanced::one(obj));
-        }
-
-        while let Some(distanced) = q.pop() {
-            let node_dist = distanced.distance() + 1;
-            if node_dist > limit {
-                break;
-            }
-
-            for (nrel, ndsts) in self
-                .src_to_dst
-                .get(&*distanced)
-                .iter()
-                .flat_map(|x| x.iter())
-            {
-                for ndst in ndsts {
-                    if (rel.is_none() || rel.as_ref() == Some(nrel))
-                        && (namespace.is_none() || namespace == Some(&ndst.namespace))
-                    {
-                        related.push(((**nrel).clone(), (**ndst).clone()));
-                    }
-                    let obj = Arc::new(ObjectOrSet::Set(((**ndst).clone(), (**nrel).clone())));
-                    dist.insert(obj.clone(), node_dist);
-                    q.push(Distanced::one(obj));
-                }
-            }
-        }
-
-        related
-    }
-
     pub async fn to_file(&self, file: &mut File) {
-        for (dst, rels_srcs) in self.dst_to_src.iter() {
-            file.write_all(format!("[{}:{}]\n", &dst.namespace, &dst.id).as_bytes())
-                .await
-                .unwrap();
-            for (rel, srcs) in rels_srcs.iter() {
-                if srcs.is_empty() {
-                    continue;
-                }
-                let srcs = srcs
-                    .iter()
-                    .map(|src| {
-                        let src_obj = src.object();
-                        let src_str = if src_obj.namespace == dst.namespace && src_obj.id == dst.id
-                        {
-                            "self".to_string()
-                        } else {
-                            format!("{}:{}", src_obj.namespace, src_obj.id)
-                        };
-                        match &**src {
-                            ObjectOrSet::Object(_) => src_str,
-                            ObjectOrSet::Set(set) => {
-                                format!("{}#{}", src_str, set.1 .0)
-                            }
-                        }
-                    })
-                    .reduce(|acc, x| acc + ", " + &x)
-                    .unwrap_or_default();
-
-                file.write_all(format!("{} = [{}]\n", &rel.0, &srcs).as_bytes())
+        let mut current: (String, String) = (String::new(), String::new());
+        for node in self.nodes.read().await.iter() {
+            if current != (node.id.namespace.clone(), node.id.id.clone()) {
+                current = (node.id.namespace.clone(), node.id.id.clone());
+                file.write_all("\n".as_bytes()).await.unwrap();
+                file.write_all(format!("[{}:{}]\n", &current.0, &current.1).as_bytes())
                     .await
                     .unwrap();
             }
-            file.write_all("\n".as_bytes()).await.unwrap();
+
+            let srcs = node
+                .edges_in
+                .read()
+                .await
+                .iter()
+                .map(|src| {
+                    if src.id.namespace == current.0 && src.id.id == current.1 {
+                        "self".to_string()
+                    } else if let Some(rel) = &src.id.relation {
+                        format!("{}:{}#{}", &src.id.namespace, &src.id.id, &rel)
+                    } else {
+                        format!("{}:{}", &src.id.namespace, &src.id.id)
+                    }
+                })
+                .reduce(|acc, x| acc + ", " + &x)
+                .unwrap_or_default();
+
+            if let Some(rel) = &node.id.relation {
+                file.write_all(format!("{} = [ {} ]\n", &rel, &srcs).as_bytes())
+                    .await
+                    .unwrap();
+            }
         }
     }
     pub async fn from_file(file: &mut File) -> Self {
         let reader = BufReader::new(file);
         let mut lines = reader.lines();
-        let mut graph = Self::new();
+        let graph = Self::default();
         let mut node: Option<(String, String)> = None;
         while let Ok(Some(line)) = lines.next_line().await {
             if line.starts_with('[') && line.ends_with(']') {
@@ -408,10 +206,10 @@ impl RelationSet {
                     let arr_stop = line.find(']').unwrap();
 
                     let rel = line[..equals_pos].trim();
-                    let arr = line[arr_start + 1..arr_stop].split(", ");
+                    let arr = line[arr_start + 1..arr_stop].trim().split(", ");
 
                     for obj in arr {
-                        let src: ObjectOrSet = if obj.contains('#') {
+                        let src: NodeId = if obj.contains('#') {
                             let sep_1 = obj.find(':');
                             let sep_2 = obj.find('#').unwrap();
 
@@ -435,7 +233,9 @@ impl RelationSet {
                             (namespace, id).into()
                         };
 
-                        graph.insert(src, rel, dst.clone());
+                        graph
+                            .insert(src, (dst.0.as_str(), dst.1.as_str(), rel))
+                            .await;
                     }
                 }
             }
@@ -444,13 +244,51 @@ impl RelationSet {
     }
 }
 
-#[derive(PartialEq, Eq)]
-struct Distanced<T> {
-    distance: u32,
-    data: T,
+impl Debug for Node {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Node").field("id", &self.id).finish()
+    }
+}
+
+async fn add_edge(from: Arc<Node>, to: Arc<Node>) {
+    from.edges_out.write().await.push(to.clone());
+    to.edges_in.write().await.push(from);
+}
+
+impl Borrow<NodeId> for Arc<Node> {
+    fn borrow(&self) -> &NodeId {
+        &self.id
+    }
+}
+
+impl PartialEq for Node {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl Eq for Node {}
+
+impl PartialOrd for Node {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.id.partial_cmp(&other.id)
+    }
+}
+impl Ord for Node {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
+impl Hash for Node {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
 }
 
 impl<T> Distanced<T> {
+    pub fn new(data: T, distance: u32) -> Self {
+        Self { distance, data }
+    }
     pub fn one(data: T) -> Self {
         Self { distance: 1, data }
     }
@@ -478,111 +316,62 @@ impl<T: Eq> Ord for Distanced<T> {
     }
 }
 
-impl PartialOrd for Relation {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.0.partial_cmp(&other.0)
-    }
-}
-impl Ord for Relation {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.0.cmp(&other.0)
-    }
-}
-
-impl PartialOrd for ObjectOrSet {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match (
-            self.object().partial_cmp(other.object()),
-            self.relation(),
-            other.relation(),
-        ) {
-            (Some(Ordering::Equal), self_rel, other_rel) => self_rel.partial_cmp(&other_rel),
-            (ord, _, _) => ord,
-        }
-    }
-}
-impl Ord for ObjectOrSet {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.object()
-            .cmp(other.object())
-            .then(self.relation().cmp(&other.relation()))
-    }
-}
-
-impl PartialOrd for Object {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        match self.namespace.partial_cmp(&other.namespace) {
-            Some(core::cmp::Ordering::Equal) => self.id.partial_cmp(&other.id),
-            ord => ord,
-        }
-    }
-}
-impl Ord for Object {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.namespace
-            .cmp(&other.namespace)
-            .then(self.id.cmp(&other.id))
-    }
-}
-
-impl From<(&str, &str)> for ObjectOrSet {
-    fn from((namespace, id): (&str, &str)) -> Self {
-        ObjectOrSet::Object(Object {
-            namespace: namespace.into(),
-            id: id.into(),
-        })
-    }
-}
-impl From<(&str, &str, &str)> for ObjectOrSet {
-    fn from((namespace, id, rel): (&str, &str, &str)) -> Self {
-        ObjectOrSet::Set(((namespace, id).into(), Relation(rel.into())))
-    }
-}
-
-impl From<(&str, &str)> for Object {
-    fn from((namespace, id): (&str, &str)) -> Self {
+impl From<(&str, &str)> for NodeId {
+    fn from(value: (&str, &str)) -> Self {
         Self {
-            namespace: namespace.into(),
-            id: id.into(),
+            namespace: value.0.to_string(),
+            id: value.1.to_string(),
+            relation: None,
         }
     }
 }
-impl From<(String, String)> for Object {
-    fn from((namespace, id): (String, String)) -> Self {
+
+impl From<(&str, &str, &str)> for NodeId {
+    fn from(value: (&str, &str, &str)) -> Self {
         Self {
-            namespace: namespace.into(),
-            id: id.into(),
+            namespace: value.0.to_string(),
+            id: value.1.to_string(),
+            relation: Some(value.2.to_string()),
         }
     }
 }
 
-impl From<&str> for Relation {
-    fn from(value: &str) -> Self {
-        Relation(value.into())
-    }
-}
-impl From<String> for Relation {
-    fn from(value: String) -> Self {
-        Relation(value.into())
+impl From<(&str, &str, Option<&str>)> for NodeId {
+    fn from(value: (&str, &str, Option<&str>)) -> Self {
+        Self {
+            namespace: value.0.to_string(),
+            id: value.1.to_string(),
+            relation: value.2.map(|x| x.to_string()),
+        }
     }
 }
 
-impl ObjectOrSet {
-    pub fn object(&self) -> &Object {
-        match self {
-            ObjectOrSet::Object(obj) => obj,
-            ObjectOrSet::Set((obj, _)) => obj,
-        }
-    }
-    pub fn relation(&self) -> Option<&Relation> {
-        match self {
-            ObjectOrSet::Object(_) => None,
-            ObjectOrSet::Set((_, rel)) => Some(rel),
+impl From<(String, String)> for NodeId {
+    fn from(value: (String, String)) -> Self {
+        Self {
+            namespace: value.0,
+            id: value.1,
+            relation: None,
         }
     }
 }
-impl Relation {
-    pub fn new(relation: &str) -> Self {
-        Self(relation.into())
+
+impl From<(String, String, String)> for NodeId {
+    fn from(value: (String, String, String)) -> Self {
+        Self {
+            namespace: value.0,
+            id: value.1,
+            relation: Some(value.2),
+        }
+    }
+}
+
+impl From<(String, String, Option<String>)> for NodeId {
+    fn from(value: (String, String, Option<String>)) -> Self {
+        Self {
+            namespace: value.0,
+            id: value.1,
+            relation: value.2,
+        }
     }
 }
