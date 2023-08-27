@@ -131,11 +131,11 @@ pub struct Claims {
     pub sub: String,
     pub azp: String,
 
-    pub name: String,
-    pub preferred_username: String,
-    pub given_name: String,
-    pub family_name: String,
-    pub email: String,
+    pub name: Option<String>,
+    pub preferred_username: Option<String>,
+    pub given_name: Option<String>,
+    pub family_name: Option<String>,
+    pub email: Option<String>,
 }
 
 async fn extract_token(
