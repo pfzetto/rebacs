@@ -9,9 +9,6 @@ trigger:
 steps:
 - name: create_image
   image: nixos/nix
-  volumes:
-  - name: nixstore
-    path: /nix
   commands:
   - nix build --extra-experimental-features nix-command --extra-experimental-features flakes --cores 0 --max-jobs auto .#dockerImage
   - cp result rebacs.tar.gz
@@ -41,6 +38,3 @@ services:
 volumes:
 - name: dockersock
   temp: {}
-- name: nixstore
-  host:
-    path: /var/lib/nix-ci-cache
