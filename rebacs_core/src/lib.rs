@@ -1,10 +1,9 @@
 use std::{
     borrow::Borrow,
     cmp::Ordering,
-    collections::{BTreeSet, BinaryHeap, HashSet},
+    collections::{BTreeSet, HashSet},
     fmt::Debug,
     hash::Hash,
-    ops::Deref,
     sync::Arc,
 };
 
@@ -27,12 +26,6 @@ pub struct Node {
     pub id: NodeId,
     pub edges_in: RwLock<Vec<Arc<Node>>>,
     pub edges_out: RwLock<Vec<Arc<Node>>>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct Distanced<T> {
-    distance: u32,
-    data: T,
 }
 
 #[derive(Default)]
@@ -112,6 +105,7 @@ impl RelationGraph {
         }
     }
 
+    /// checks if there is a path between src and dst using BFS
     pub async fn has_recursive<'a>(
         &self,
         src: impl Into<NodeId>,
@@ -127,34 +121,40 @@ impl RelationGraph {
             return false;
         };
 
-        let src_neighbors = src
+        let mut distance = 1;
+
+        let mut neighbors = src
             .edges_out
             .read()
             .await
             .iter()
-            .map(|x| Distanced::one(x.clone()))
+            .cloned()
             .collect::<Vec<_>>();
 
-        let mut q: BinaryHeap<Distanced<Arc<Node>>> = BinaryHeap::from(src_neighbors);
         let mut visited: HashSet<Arc<Node>> = HashSet::new();
 
-        while let Some(distanced) = q.pop() {
-            if distanced.id == dst {
-                return true;
-            }
-            if let Some(limit) = limit {
-                if distanced.distance() > limit {
-                    return false;
+        while !neighbors.is_empty() {
+            let mut next_neighbors = vec![];
+            for neighbor in neighbors {
+                if distance > 1 && visited.contains(&neighbor) {
+                    continue;
                 }
-            }
-
-            for neighbor in distanced.edges_out.read().await.iter() {
-                if !visited.contains(neighbor) {
-                    q.push(Distanced::new(neighbor.clone(), distanced.distance() + 1))
+                if neighbor.id == dst {
+                    return true;
                 }
-            }
+                if let Some(limit) = limit {
+                    if distance > limit {
+                        return false;
+                    }
+                }
 
-            visited.insert(distanced.clone());
+                let mut node_neighbors = neighbor.edges_out.read().await.clone();
+                next_neighbors.append(&mut node_neighbors);
+
+                visited.insert(neighbor);
+            }
+            neighbors = next_neighbors;
+            distance += 1;
         }
         false
     }
@@ -289,37 +289,6 @@ impl Ord for Node {
 impl Hash for Node {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.id.hash(state);
-    }
-}
-
-impl<T> Distanced<T> {
-    pub fn new(data: T, distance: u32) -> Self {
-        Self { distance, data }
-    }
-    pub fn one(data: T) -> Self {
-        Self { distance: 1, data }
-    }
-    pub fn distance(&self) -> u32 {
-        self.distance
-    }
-}
-
-impl<T> Deref for Distanced<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl<T: PartialEq> PartialOrd for Distanced<T> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.distance.partial_cmp(&other.distance)
-    }
-}
-impl<T: Eq> Ord for Distanced<T> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.distance.cmp(&other.distance)
     }
 }
 
