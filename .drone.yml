@@ -42,4 +42,5 @@ volumes:
 - name: dockersock
   temp: {}
 - name: nixstore
-  path: /var/lib/nix-ci-cache
+  host:
+    path: /var/lib/nix-ci-cache
