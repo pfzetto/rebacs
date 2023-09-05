@@ -9,10 +9,12 @@ use std::{
 };
 
 use tokio::{
-    fs::File,
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncWriteExt},
     sync::RwLock,
 };
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId {
@@ -34,11 +36,11 @@ struct Distanced<T> {
 }
 
 #[derive(Default)]
-pub struct RelationSet {
+pub struct RelationGraph {
     nodes: RwLock<BTreeSet<Arc<Node>>>,
 }
 
-impl RelationSet {
+impl RelationGraph {
     pub async fn insert(&self, src: impl Into<NodeId>, dst: impl Into<NodeId>) {
         let src = src.into();
         let dst = dst.into();
@@ -157,13 +159,14 @@ impl RelationSet {
         false
     }
 
-    pub async fn to_file(&self, file: &mut File) {
+    pub async fn write_savefile(&self, writeable: &mut (impl AsyncWriteExt + Unpin)) {
         let mut current: (String, String) = (String::new(), String::new());
         for node in self.nodes.read().await.iter() {
             if current != (node.id.namespace.clone(), node.id.id.clone()) {
                 current = (node.id.namespace.clone(), node.id.id.clone());
-                file.write_all("\n".as_bytes()).await.unwrap();
-                file.write_all(format!("[{}:{}]\n", &current.0, &current.1).as_bytes())
+                writeable.write_all("\n".as_bytes()).await.unwrap();
+                writeable
+                    .write_all(format!("[{}:{}]\n", &current.0, &current.1).as_bytes())
                     .await
                     .unwrap();
             }
@@ -186,15 +189,15 @@ impl RelationSet {
                 .unwrap_or_default();
 
             if let Some(rel) = &node.id.relation {
-                file.write_all(format!("{} = [ {} ]\n", &rel, &srcs).as_bytes())
+                writeable
+                    .write_all(format!("{} = [ {} ]\n", &rel, &srcs).as_bytes())
                     .await
                     .unwrap();
             }
         }
     }
-    pub async fn from_file(file: &mut File) -> Self {
-        let reader = BufReader::new(file);
-        let mut lines = reader.lines();
+    pub async fn read_savefile(readable: &mut (impl AsyncBufReadExt + Unpin)) -> Self {
+        let mut lines = readable.lines();
         let graph = Self::default();
         let mut node: Option<(String, String)> = None;
         while let Ok(Some(line)) = lines.next_line().await {
@@ -274,7 +277,7 @@ impl Eq for Node {}
 
 impl PartialOrd for Node {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        self.id.partial_cmp(&other.id)
+        Some(self.cmp(other))
     }
 }
 impl Ord for Node {

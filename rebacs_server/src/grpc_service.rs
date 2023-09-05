@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use jsonwebtoken::{decode, DecodingKey, TokenData, Validation};
 use log::info;
+use rebacs_core::{NodeId, RelationGraph};
 use serde::Deserialize;
 use tokio::sync::mpsc::Sender;
 use tonic::metadata::MetadataMap;
@@ -12,11 +13,10 @@ use crate::rebacs_proto::{
     rebac_service_server, ExistsReq, ExistsRes, GrantReq, GrantRes, IsPermittedReq, IsPermittedRes,
     RevokeReq, RevokeRes,
 };
-use crate::relation_set::{NodeId, RelationSet};
 
 #[derive(Clone)]
 pub struct RebacService {
-    pub graph: Arc<RelationSet>,
+    pub graph: Arc<RelationGraph>,
     pub oidc_pubkey: DecodingKey,
     pub oidc_validation: Validation,
     pub save_trigger: Sender<()>,
@@ -158,7 +158,7 @@ async fn is_permitted(
     token: &TokenData<Claims>,
     dst: &NodeId,
     relation: &str,
-    graph: &RelationSet,
+    graph: &RelationGraph,
 ) -> bool {
     let s1 = graph
         .has_recursive(

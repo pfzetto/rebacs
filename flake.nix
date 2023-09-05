@@ -33,8 +33,7 @@
           rustToolchain = pkgs.rust-bin.nightly.latest.default;
 
           protoFilter = path: _type: builtins.match ".*proto$" path != null;
-          tailwindFilter = path: _type: builtins.match "^tailwind.config.js$" path != null;
-          protoOrCargo = path: type: (protoFilter path type) || (tailwindFilter path type) || (craneLib.filterCargoSources path type);
+          protoOrCargo = path: type: (protoFilter path type) || (craneLib.filterCargoSources path type);
 
           craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
           src = pkgs.lib.cleanSourceWith {
@@ -58,7 +57,7 @@
             name = "rebacs";
             tag = "latest";
             config = {
-              Cmd = [ "${bin}/bin/rebacs" ];
+              Cmd = [ "${bin}/bin/rebacs_server" ];
             };
           };
 

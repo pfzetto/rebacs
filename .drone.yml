@@ -1,0 +1,39 @@
+kind: pipeline
+ype: docker
+name: rebacs
+
+trigger:
+  event:
+  - push
+
+steps:
+- name: create_image
+  image: nixos/nix
+  commands:
+  - nix build --extra-experimental-features nix-command --extra-experimental-features flakes --cores 0 --max-jobs auto .#dockerImage
+  - cp result rebacs.tar.gz
+- name: upload_image
+  image: docker:dind
+  environment:
+    REGISTRY_PASSWD:
+      from_secret: REGISTRY_PASSWD
+  volumes:
+  - name: dockersock
+    path: /var/run
+  commands:
+  - docker login --username droneci --password $REGISTRY_PASSWD git2.zettoit.eu
+  - docker load < rebacs.tar.gz
+  - docker tag rebacs:latest git2.zettoit.eu/zettoit/rebacs:latest
+  - docker push git2.zettoit.eu/zettoit/rebacs:latest
+
+services:
+- name: docker
+  image: docker:dind
+  privileged: true
+  volumes:
+  - name: dockersock
+    path: /var/run
+
+volumes:
+- name: dockersock
+  temp: {}

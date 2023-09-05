@@ -5,10 +5,11 @@ use std::{env, sync::Arc, time::Duration};
 use grpc_service::RebacService;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use log::info;
-use relation_set::RelationSet;
+use rebacs_core::RelationGraph;
 use serde::Deserialize;
 use tokio::{
     fs::{self, File},
+    io::BufReader,
     select,
     sync::mpsc::channel,
 };
@@ -16,7 +17,6 @@ use tonic::transport::Server;
 
 pub mod grpc_service;
 pub mod rebacs_proto;
-pub mod relation_set;
 
 use crate::rebacs_proto::rebac_service_server;
 
@@ -31,10 +31,11 @@ async fn main() {
     env_logger::init();
 
     info!("loading graph from graph.dat");
-    let graph = if let Ok(mut file) = File::open("graph.dat").await {
-        RelationSet::from_file(&mut file).await
+    let graph = if let Ok(file) = File::open("graph.dat").await {
+        let mut reader = BufReader::new(file);
+        RelationGraph::read_savefile(&mut reader).await
     } else {
-        RelationSet::default()
+        RelationGraph::default()
     };
 
     let graph = Arc::new(graph);
@@ -50,7 +51,7 @@ async fn main() {
             info!("saving graph");
             let _ = fs::copy("graph.dat", "graph.dat.bak").await;
             let mut file = File::create("graph.dat").await.unwrap();
-            save_thread_graph.to_file(&mut file).await;
+            save_thread_graph.write_savefile(&mut file).await;
         }
     });
 
