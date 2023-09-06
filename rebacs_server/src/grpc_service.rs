@@ -2,16 +2,16 @@ use std::sync::Arc;
 
 use jsonwebtoken::{decode, DecodingKey, TokenData, Validation};
 use log::info;
-use rebacs_core::{NodeId, RelationGraph};
+use rebacs_core::{RObject, RObjectOrSet, RSet, RelationGraph};
 use serde::Deserialize;
 use tokio::sync::mpsc::Sender;
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status};
 
-use crate::rebacs_proto::Object;
 use crate::rebacs_proto::{
-    rebac_service_server, ExistsReq, ExistsRes, GrantReq, GrantRes, IsPermittedReq, IsPermittedRes,
-    RevokeReq, RevokeRes,
+    exists_req, grant_req, is_permitted_req, rebac_service_server, revoke_req, ExistsReq,
+    ExistsRes, ExpandReq, ExpandRes, ExpandResItem, GrantReq, GrantRes, IsPermittedReq,
+    IsPermittedRes, Object, RevokeReq, RevokeRes, Set,
 };
 
 #[derive(Clone)]
@@ -22,37 +22,63 @@ pub struct RebacService {
     pub save_trigger: Sender<()>,
 }
 
-const NAMESPACE_NS: &str = "namespace";
 const USER_NS: &str = "user";
-const GRANT_RELATION: &str = "grant";
-const REVOKE_RELATION: &str = "revoke";
+
+macro_rules! extract {
+    ($type:ident::Src($src:expr)) => {{
+        let src = $src
+            .as_ref()
+            .ok_or(Status::invalid_argument("src must be set"))?;
+        let src: RObjectOrSet = match src {
+            $type::Src::SrcObj(obj) => (obj.namespace.clone(), obj.id.clone(), None).into(),
+            $type::Src::SrcSet(set) => (
+                set.namespace.clone(),
+                set.id.clone(),
+                Some(set.relation.clone()),
+            )
+                .into(),
+        };
+
+        if src.namespace().is_empty() && src.id().is_empty() {
+            None
+        } else if src.namespace().is_empty() {
+            return Err(Status::invalid_argument("src.namespace must be set"));
+        } else if src.id().is_empty() {
+            return Err(Status::invalid_argument("src.id must be set"));
+        } else {
+            Some(src)
+        }
+    }};
+}
 
 #[tonic::async_trait]
 impl rebac_service_server::RebacService for RebacService {
     async fn grant(&self, request: Request<GrantReq>) -> Result<Response<GrantRes>, Status> {
         let token =
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
+        let user: RObject = (USER_NS, token.claims.sub.as_str()).into();
 
-        let (src, dst) = extract_src_dst(&request.get_ref().src, &request.get_ref().dst)?;
+        let src = extract!(grant_req::Src(request.get_ref().src))
+            .unwrap_or(("user", token.claims.sub.as_str(), None).into());
+        let dst = extract_dst(request.get_ref().dst.as_ref())?;
 
-        if !is_permitted(&token, &dst, GRANT_RELATION, &self.graph).await {
+        if !self.graph.can_write(&user, &dst, None).await {
             return Err(Status::permission_denied(
                 "token not permitted to grant permissions on dst",
             ));
         }
-
         info!(
             "created relation {}:{}#{}@{}:{}#{} for {}",
-            dst.namespace,
-            dst.id,
-            dst.relation.clone().unwrap_or_default(),
-            src.namespace,
-            src.id,
-            src.relation.clone().unwrap_or_default(),
+            dst.namespace(),
+            dst.id(),
+            dst.relation(),
+            src.namespace(),
+            src.id(),
+            src.relation().map(|x| x.to_string()).unwrap_or_default(),
             token.claims.sub
         );
 
-        self.graph.insert(src, dst).await;
+        self.graph.insert(src, &dst).await;
 
         self.save_trigger.send(()).await.unwrap();
 
@@ -61,34 +87,28 @@ impl rebac_service_server::RebacService for RebacService {
     async fn revoke(&self, request: Request<RevokeReq>) -> Result<Response<RevokeRes>, Status> {
         let token =
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
+        let user: RObject = (USER_NS, token.claims.sub.as_str()).into();
 
-        let (src, dst) = extract_src_dst(&request.get_ref().src, &request.get_ref().dst)?;
+        let src = extract!(revoke_req::Src(request.get_ref().src))
+            .unwrap_or(("user", token.claims.sub.as_str(), None).into());
+        let dst = extract_dst(request.get_ref().dst.as_ref())?;
 
-        if !is_permitted(&token, &dst, REVOKE_RELATION, &self.graph).await {
+        if !self.graph.can_write(&user, &dst, None).await {
             return Err(Status::permission_denied(
                 "token not permitted to revoke permissions on dst",
             ));
         }
 
-        self.graph
-            .remove(
-                (
-                    src.namespace.to_string(),
-                    src.id.to_string(),
-                    src.relation.clone(),
-                ),
-                (dst.namespace.clone(), dst.id.clone(), dst.relation.clone()),
-            )
-            .await;
+        self.graph.remove(&src, &dst).await;
 
         info!(
             "delted relation {}:{}#{}@{}:{}#{} for {}",
-            dst.namespace,
-            dst.id,
-            dst.relation.clone().unwrap_or_default(),
-            src.namespace,
-            src.id,
-            src.relation.clone().unwrap_or_default(),
+            dst.namespace(),
+            dst.id(),
+            dst.relation(),
+            src.namespace(),
+            src.id(),
+            src.relation().map(|x| x.to_string()).unwrap_or_default(),
             token.claims.sub
         );
 
@@ -100,9 +120,11 @@ impl rebac_service_server::RebacService for RebacService {
         let token =
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
 
-        let (src, dst) = extract_src_dst(&request.get_ref().src, &request.get_ref().dst)?;
+        let src = extract!(exists_req::Src(request.get_ref().src))
+            .unwrap_or(("user", token.claims.sub.as_str(), None).into());
+        let dst = extract_dst(request.get_ref().dst.as_ref())?;
 
-        let exists = self.graph.has(src, dst).await;
+        let exists = self.graph.has(src, &dst).await;
 
         Ok(Response::new(ExistsRes { exists }))
     }
@@ -114,11 +136,49 @@ impl rebac_service_server::RebacService for RebacService {
         let token =
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
 
-        let (src, dst) = extract_src_dst(&request.get_ref().src, &request.get_ref().dst)?;
+        let src = extract!(is_permitted_req::Src(request.get_ref().src))
+            .unwrap_or(("user", token.claims.sub.as_str(), None).into());
+        let dst = extract_dst(request.get_ref().dst.as_ref())?;
 
-        let permitted = self.graph.has_recursive(src, dst, None).await;
+        let permitted = self.graph.check(src, &dst, None).await;
 
         Ok(Response::new(IsPermittedRes { permitted }))
+    }
+
+    async fn expand(&self, request: Request<ExpandReq>) -> Result<Response<ExpandRes>, Status> {
+        let token =
+            extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
+        let dst = extract_dst(request.get_ref().dst.as_ref())?;
+
+        let user: RObject = (USER_NS, token.claims.sub.as_str()).into();
+        if !self.graph.can_write(&user, &dst, None).await {
+            return Err(Status::permission_denied(
+                "token not permitted to expand permissions on dst",
+            ));
+        }
+
+        let expanded = self
+            .graph
+            .expand(&dst)
+            .await
+            .into_iter()
+            .map(|(v, path)| ExpandResItem {
+                src: Some(Object {
+                    namespace: v.namespace().to_string(),
+                    id: v.id().to_string(),
+                }),
+                path: path
+                    .into_iter()
+                    .map(|w| Set {
+                        namespace: w.namespace().to_string(),
+                        id: w.id().to_string(),
+                        relation: w.relation().to_string(),
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        Ok(Response::new(ExpandRes { expanded }))
     }
 }
 
@@ -154,54 +214,18 @@ async fn extract_token(
     Ok(token)
 }
 
-async fn is_permitted(
-    token: &TokenData<Claims>,
-    dst: &NodeId,
-    relation: &str,
-    graph: &RelationGraph,
-) -> bool {
-    let s1 = graph
-        .has_recursive(
-            (USER_NS, token.claims.sub.as_str()),
-            (dst.namespace.as_str(), dst.id.as_str(), relation),
-            None,
-        )
-        .await;
-
-    let s2 = graph
-        .has_recursive(
-            (USER_NS, token.claims.sub.as_str()),
-            (NAMESPACE_NS, dst.namespace.as_str(), relation),
-            None,
-        )
-        .await;
-
-    s1 || s2
-}
-
-fn extract_src_dst(src: &Option<Object>, dst: &Option<Object>) -> Result<(NodeId, NodeId), Status> {
-    let src = src
-        .as_ref()
-        .ok_or(Status::invalid_argument("src must be set"))?;
-    let src: NodeId = (src.namespace.clone(), src.id.clone(), src.relation.clone()).into();
+fn extract_dst(dst: Option<&Set>) -> Result<RSet, Status> {
     let dst = dst
         .as_ref()
         .ok_or(Status::invalid_argument("dst must be set"))?;
-    let dst: NodeId = (dst.namespace.clone(), dst.id.clone(), dst.relation.clone()).into();
+    let dst: RSet = (dst.namespace.clone(), dst.id.clone(), dst.relation.clone()).into();
 
-    if dst.namespace.is_empty() {
+    if dst.namespace().is_empty() {
         return Err(Status::invalid_argument("dst.namespace must be set"));
     }
-    if dst.id.is_empty() {
+    if dst.id().is_empty() {
         return Err(Status::invalid_argument("dst.id must be set"));
     }
 
-    if src.namespace.is_empty() {
-        return Err(Status::invalid_argument("src.namespace must be set"));
-    }
-    if src.id.is_empty() {
-        return Err(Status::invalid_argument("src.id must be set"));
-    }
-
-    Ok((src, dst))
+    Ok(dst)
 }

@@ -6,40 +6,71 @@ service RebacService {
   rpc Revoke(RevokeReq) returns (RevokeRes);
   rpc Exists(ExistsReq) returns (ExistsRes);
   rpc IsPermitted(IsPermittedReq) returns (IsPermittedRes);
+  rpc Expand(ExpandReq) returns (ExpandRes);
 }
 
 
 message GrantReq{
-  Object src = 1;
-  Object dst = 2;
+  oneof src {
+    Object src_obj = 1;
+    Set src_set = 2;
+  }
+  Set dst = 3;
 }
 message GrantRes{}
 
 message RevokeReq{
-  Object src = 1;
-  Object dst = 2;
+  oneof src {
+    Object src_obj = 1;
+    Set src_set = 2;
+  }
+  Set dst = 3;
 }
 message RevokeRes{}
 
 message ExistsReq{
-  Object src = 1;
-  Object dst = 2;
+  oneof src {
+    Object src_obj = 1;
+    Set src_set = 2;
+  }
+  Set dst = 3;
 }
 message ExistsRes{
   bool exists = 1;
 }
 
 message IsPermittedReq{
-  Object src = 1;
-  Object dst = 2;
+  oneof src {
+    Object src_obj = 1;
+    Set src_set = 2;
+  }
+  Set dst = 3;
 }
 message IsPermittedRes{
   bool permitted = 1;
+}
+
+message ExpandReq {
+    Set dst = 1;
+}
+
+message ExpandRes {
+    repeated ExpandResItem expanded = 1;
+}
+
+message ExpandResItem {
+    Object src = 1;
+    repeated Set path = 2;
 }
 
 
 message Object{
   string namespace = 1;
   string id = 2;
-  optional string relation = 3;
+}
+
+message Set{
+  string namespace = 1;
+  string id = 2;
+  string relation = 3;
 }

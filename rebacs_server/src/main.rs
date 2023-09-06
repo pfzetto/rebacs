@@ -16,7 +16,10 @@ use tokio::{
 use tonic::transport::Server;
 
 pub mod grpc_service;
-pub mod rebacs_proto;
+pub mod rebacs_proto {
+
+    tonic::include_proto!("eu.zettoit.rebacs");
+}
 
 use crate::rebacs_proto::rebac_service_server;
 
