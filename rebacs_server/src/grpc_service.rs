@@ -26,27 +26,26 @@ const USER_NS: &str = "user";
 
 macro_rules! extract {
     ($type:ident::Src($src:expr)) => {{
-        let src = $src
-            .as_ref()
-            .ok_or(Status::invalid_argument("src must be set"))?;
-        let src: RObjectOrSet = match src {
-            $type::Src::SrcObj(obj) => (obj.namespace.clone(), obj.id.clone(), None).into(),
-            $type::Src::SrcSet(set) => (
-                set.namespace.clone(),
-                set.id.clone(),
-                Some(set.relation.clone()),
-            )
-                .into(),
-        };
+        if let Some(src) = $src.as_ref() {
+            let src: RObjectOrSet = match src {
+                $type::Src::SrcObj(obj) => (obj.namespace.clone(), obj.id.clone(), None).into(),
+                $type::Src::SrcSet(set) => (
+                    set.namespace.clone(),
+                    set.id.clone(),
+                    Some(set.relation.clone()),
+                )
+                    .into(),
+            };
 
-        if src.namespace().is_empty() && src.id().is_empty() {
-            None
-        } else if src.namespace().is_empty() {
-            return Err(Status::invalid_argument("src.namespace must be set"));
-        } else if src.id().is_empty() {
-            return Err(Status::invalid_argument("src.id must be set"));
+            if src.namespace().is_empty() {
+                return Err(Status::invalid_argument("src.namespace must be set"));
+            } else if src.id().is_empty() {
+                return Err(Status::invalid_argument("src.id must be set"));
+            } else {
+                Some(src)
+            }
         } else {
-            Some(src)
+            None
         }
     }};
 }
