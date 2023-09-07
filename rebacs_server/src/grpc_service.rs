@@ -24,32 +24,6 @@ pub struct RebacService {
 
 const USER_NS: &str = "user";
 
-macro_rules! extract {
-    ($type:ident::Src($src:expr)) => {{
-        if let Some(src) = $src.as_ref() {
-            let src: RObjectOrSet = match src {
-                $type::Src::SrcObj(obj) => (obj.namespace.clone(), obj.id.clone(), None).into(),
-                $type::Src::SrcSet(set) => (
-                    set.namespace.clone(),
-                    set.id.clone(),
-                    Some(set.relation.clone()),
-                )
-                    .into(),
-            };
-
-            if src.namespace().is_empty() {
-                return Err(Status::invalid_argument("src.namespace must be set"));
-            } else if src.id().is_empty() {
-                return Err(Status::invalid_argument("src.id must be set"));
-            } else {
-                Some(src)
-            }
-        } else {
-            None
-        }
-    }};
-}
-
 #[tonic::async_trait]
 impl rebac_service_server::RebacService for RebacService {
     async fn grant(&self, request: Request<GrantReq>) -> Result<Response<GrantRes>, Status> {
@@ -57,8 +31,7 @@ impl rebac_service_server::RebacService for RebacService {
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
         let user: RObject = (USER_NS, token.claims.sub.as_str()).into();
 
-        let src = extract!(grant_req::Src(request.get_ref().src))
-            .unwrap_or(("user", token.claims.sub.as_str(), None).into());
+        let src = extract_src(request.get_ref().src.clone(), &token.claims.sub)?;
         let dst = extract_dst(request.get_ref().dst.as_ref())?;
 
         if !self.graph.can_write(&user, &dst, None).await {
@@ -88,8 +61,7 @@ impl rebac_service_server::RebacService for RebacService {
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
         let user: RObject = (USER_NS, token.claims.sub.as_str()).into();
 
-        let src = extract!(revoke_req::Src(request.get_ref().src))
-            .unwrap_or(("user", token.claims.sub.as_str(), None).into());
+        let src = extract_src(request.get_ref().src.clone(), &token.claims.sub)?;
         let dst = extract_dst(request.get_ref().dst.as_ref())?;
 
         if !self.graph.can_write(&user, &dst, None).await {
@@ -119,8 +91,7 @@ impl rebac_service_server::RebacService for RebacService {
         let token =
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
 
-        let src = extract!(exists_req::Src(request.get_ref().src))
-            .unwrap_or(("user", token.claims.sub.as_str(), None).into());
+        let src = extract_src(request.get_ref().src.clone(), &token.claims.sub)?;
         let dst = extract_dst(request.get_ref().dst.as_ref())?;
 
         let exists = self.graph.has(src, &dst).await;
@@ -135,8 +106,7 @@ impl rebac_service_server::RebacService for RebacService {
         let token =
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
 
-        let src = extract!(is_permitted_req::Src(request.get_ref().src))
-            .unwrap_or(("user", token.claims.sub.as_str(), None).into());
+        let src = extract_src(request.get_ref().src.clone(), &token.claims.sub)?;
         let dst = extract_dst(request.get_ref().dst.as_ref())?;
 
         let permitted = self.graph.check(src, &dst, None).await;
@@ -213,6 +183,24 @@ async fn extract_token(
     Ok(token)
 }
 
+fn extract_src<'a>(
+    src: Option<impl Into<RObjectOrSet<'a>>>,
+    subject: &str,
+) -> Result<RObjectOrSet<'a>, Status> {
+    if let Some(src) = src {
+        let src: RObjectOrSet<'_> = src.into();
+        if src.namespace().is_empty() {
+            Err(Status::invalid_argument("src.namespace must be set"))
+        } else if src.id().is_empty() {
+            Err(Status::invalid_argument("src.id must be set"))
+        } else {
+            Ok(src)
+        }
+    } else {
+        Ok((USER_NS, subject, None).into())
+    }
+}
+
 fn extract_dst(dst: Option<&Set>) -> Result<RSet, Status> {
     let dst = dst
         .as_ref()
@@ -228,3 +216,21 @@ fn extract_dst(dst: Option<&Set>) -> Result<RSet, Status> {
 
     Ok(dst)
 }
+
+macro_rules! from_src {
+    ($src:path) => {
+        impl From<$src> for RObjectOrSet<'_> {
+            fn from(value: $src) -> Self {
+                use $src;
+                match value {
+                    Src::SrcObj(obj) => (obj.namespace, obj.id, None).into(),
+                    Src::SrcSet(set) => (set.namespace, set.id, Some(set.relation)).into(),
+                }
+            }
+        }
+    };
+}
+from_src!(grant_req::Src);
+from_src!(revoke_req::Src);
+from_src!(exists_req::Src);
+from_src!(is_permitted_req::Src);
