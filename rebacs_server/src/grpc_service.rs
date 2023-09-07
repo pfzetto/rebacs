@@ -31,8 +31,8 @@ impl rebac_service_server::RebacService for RebacService {
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
         let user: RObject = (USER_NS, token.claims.sub.as_str()).into();
 
-        let src = extract_src(request.get_ref().src.clone(), &token.claims.sub)?;
-        let dst = extract_dst(request.get_ref().dst.as_ref())?;
+        let src = extract_src(request.get_ref().src.clone(), &user)?;
+        let dst = extract_dst(request.get_ref().dst.clone())?;
 
         if !self.graph.can_write(&user, &dst, None).await {
             return Err(Status::permission_denied(
@@ -61,8 +61,8 @@ impl rebac_service_server::RebacService for RebacService {
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
         let user: RObject = (USER_NS, token.claims.sub.as_str()).into();
 
-        let src = extract_src(request.get_ref().src.clone(), &token.claims.sub)?;
-        let dst = extract_dst(request.get_ref().dst.as_ref())?;
+        let src = extract_src(request.get_ref().src.clone(), &user)?;
+        let dst = extract_dst(request.get_ref().dst.clone())?;
 
         if !self.graph.can_write(&user, &dst, None).await {
             return Err(Status::permission_denied(
@@ -90,9 +90,10 @@ impl rebac_service_server::RebacService for RebacService {
     async fn exists(&self, request: Request<ExistsReq>) -> Result<Response<ExistsRes>, Status> {
         let token =
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
+        let user: RObject = (USER_NS, token.claims.sub.as_str()).into();
 
-        let src = extract_src(request.get_ref().src.clone(), &token.claims.sub)?;
-        let dst = extract_dst(request.get_ref().dst.as_ref())?;
+        let src = extract_src(request.get_ref().src.clone(), &user)?;
+        let dst = extract_dst(request.get_ref().dst.clone())?;
 
         let exists = self.graph.has(src, &dst).await;
 
@@ -105,9 +106,10 @@ impl rebac_service_server::RebacService for RebacService {
     ) -> Result<Response<IsPermittedRes>, Status> {
         let token =
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
+        let user: RObject = (USER_NS, token.claims.sub.as_str()).into();
 
-        let src = extract_src(request.get_ref().src.clone(), &token.claims.sub)?;
-        let dst = extract_dst(request.get_ref().dst.as_ref())?;
+        let src = extract_src(request.get_ref().src.clone(), &user)?;
+        let dst = extract_dst(request.get_ref().dst.clone())?;
 
         let permitted = self.graph.check(src, &dst, None).await;
 
@@ -117,7 +119,7 @@ impl rebac_service_server::RebacService for RebacService {
     async fn expand(&self, request: Request<ExpandReq>) -> Result<Response<ExpandRes>, Status> {
         let token =
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
-        let dst = extract_dst(request.get_ref().dst.as_ref())?;
+        let dst = extract_dst(request.get_ref().dst.clone())?;
 
         let user: RObject = (USER_NS, token.claims.sub.as_str()).into();
         if !self.graph.can_write(&user, &dst, None).await {
@@ -185,7 +187,7 @@ async fn extract_token(
 
 fn extract_src<'a>(
     src: Option<impl Into<RObjectOrSet<'a>>>,
-    subject: &str,
+    fallback_user: &'a RObject,
 ) -> Result<RObjectOrSet<'a>, Status> {
     if let Some(src) = src {
         let src: RObjectOrSet<'_> = src.into();
@@ -197,15 +199,13 @@ fn extract_src<'a>(
             Ok(src)
         }
     } else {
-        Ok((USER_NS, subject, None).into())
+        Ok(fallback_user.into())
     }
 }
 
-fn extract_dst(dst: Option<&Set>) -> Result<RSet, Status> {
-    let dst = dst
-        .as_ref()
-        .ok_or(Status::invalid_argument("dst must be set"))?;
-    let dst: RSet = (dst.namespace.clone(), dst.id.clone(), dst.relation.clone()).into();
+fn extract_dst(dst: Option<Set>) -> Result<RSet, Status> {
+    let dst = dst.ok_or(Status::invalid_argument("dst must be set"))?;
+    let dst: RSet = (dst.namespace, dst.id, dst.relation).into();
 
     if dst.namespace().is_empty() {
         return Err(Status::invalid_argument("dst.namespace must be set"));
