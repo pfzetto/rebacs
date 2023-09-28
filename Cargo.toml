@@ -4,3 +4,7 @@ members = [
     "rebacs_server",
     "rebacs_core",
 ]
+
+[workspace.package]
+name = "rebacs"
+version = "0.1.0"
