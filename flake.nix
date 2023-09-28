@@ -71,7 +71,7 @@
           devShells.default = mkShell {
             inputsFrom = [ bin ];
           };
-	  hydra.build = bin;
+	  hydraJobs.build = bin;
         }
       );
 }
