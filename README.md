@@ -1,21 +1,21 @@
 This library implements a in-memory relationship-based access control dababase, that was inspired by [Google's Zanzibar](https://research.google/pubs/pub48190/).
 
 # Naming
-## `RObject`
-A `RObject` is a tuple of the values (`namespace`, `id`).
+## `Object`
+A `Object` is a tuple of the values (`namespace`, `id`).
 It represents a object like a user.
 Example: (`users`, `alice`).
 
-## `RSet`
-A `RSet` is a tuple of the values (`namespace`, `id`, `permission`).
-It represents a permission for a `RObject`.
+## `Set`
+A `Set` is a tuple of the values (`namespace`, `id`, `permission`).
+It represents a permission for a `Object`.
 Example: (`files`, `foo.pdf`, `read`).
 
 # Usage
 The `RelationGraph`-struct contains a graph of all relationships.
 Relationships can be created between:
-- `RObject` and `RSet` => user alice can read the file foo.pdf.
-- `RSet` and `RSet` => everyone who can read the file foo.pdf can read the file bar.pdf.
+- `Object` and `Set` => user alice can read the file foo.pdf.
+- `Set` and `Set` => everyone who can read the file foo.pdf can read the file bar.pdf.
 
 # Specials
 - The `*`-id is used as a wildcard id to create a virtual relation from this id to every other id in the namespace.
