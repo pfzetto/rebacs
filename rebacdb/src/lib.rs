@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 use std::{
     borrow::{Borrow, Cow},
     cmp::Ordering,
@@ -16,32 +17,34 @@ use tokio::{
 mod tests;
 
 const WILDCARD_ID: &str = "*";
-const WRITE_RELATION: &str = "grant";
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
-pub struct VertexId {
+struct VertexId {
     namespace: String,
     id: String,
     relation: Option<String>,
 }
+/// shared version of [`VertexId`]
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone)]
-pub struct VertexIdRef<'a> {
+struct VertexIdRef<'a> {
     namespace: &'a str,
     id: &'a str,
     relation: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RObjectOrSet<'a> {
-    Object(Cow<'a, RObject>),
-    Set(Cow<'a, RSet>),
+pub enum ObjectOrSet<'a> {
+    Object(Cow<'a, Object>),
+    Set(Cow<'a, Set>),
 }
 
+/// representation of a an object and a relation (e.g. (`file`, `foo.pdf`, `read`))
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RSet(VertexId);
+pub struct Set(VertexId);
 
+/// representation of an object (e.g. (`user`, `alice`))
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RObject(VertexId);
+pub struct Object(VertexId);
 
 struct Vertex {
     id: VertexId,
@@ -49,8 +52,10 @@ struct Vertex {
     edges_out: RwLock<HashSet<Arc<Vertex>>>,
 }
 
+/// graph-based database implementation
 #[derive(Default)]
 pub struct RelationGraph {
+    /// all verticies of the graph
     verticies: RwLock<BTreeSet<Arc<Vertex>>>,
 }
 
@@ -61,7 +66,15 @@ trait VertexIdentifier {
     fn vertex_id(&self) -> &VertexId;
 }
 
-impl RObject {
+impl Object {
+    pub fn new(namespace: String, id: String) -> Self {
+        Self(VertexId {
+            namespace,
+            id,
+            relation: None,
+        })
+    }
+
     pub fn namespace(&self) -> &str {
         &self.0.namespace
     }
@@ -70,15 +83,20 @@ impl RObject {
         &self.0.id
     }
 
-    pub fn relation(&self) -> Option<&str> {
-        None
-    }
     fn vertex_id(&self) -> &VertexId {
         &self.0
     }
 }
 
-impl RSet {
+impl Set {
+    pub fn new(namespace: String, id: String, relation: String) -> Self {
+        Self(VertexId {
+            namespace,
+            id,
+            relation: Some(relation),
+        })
+    }
+
     pub fn namespace(&self) -> &str {
         &self.0.namespace
     }
@@ -96,7 +114,7 @@ impl RSet {
     }
 }
 
-impl<'a> RObjectOrSet<'a> {
+impl<'a> ObjectOrSet<'a> {
     pub fn namespace(&self) -> &str {
         match self {
             Self::Object(obj) => obj.namespace(),
@@ -126,8 +144,9 @@ impl<'a> RObjectOrSet<'a> {
 }
 
 impl RelationGraph {
-    pub async fn insert(&self, src: impl Into<RObjectOrSet<'_>>, dst: &RSet) {
-        let src: RObjectOrSet<'_> = src.into();
+    /// create a new relation between from a [`RObject`] or [`RSet`] to a [`RSet`]
+    pub async fn insert(&self, src: impl Into<ObjectOrSet<'_>>, dst: &Set) {
+        let src: ObjectOrSet<'_> = src.into();
         let mut verticies = self.verticies.write().await;
 
         let mut get_or_create = |vertex: &VertexId| match verticies.get(vertex) {
@@ -145,11 +164,11 @@ impl RelationGraph {
 
         let src_without_relation = src.relation().is_none();
 
-        let src_wildcard: RObjectOrSet = (src.namespace(), WILDCARD_ID, src.relation()).into();
+        let src_wildcard: ObjectOrSet = (src.namespace(), WILDCARD_ID, src.relation()).into();
         let src_wildcard = get_or_create(src_wildcard.vertex_id());
         let src_vertex = get_or_create(src.vertex_id());
 
-        let dst_wildcard: RSet = (dst.namespace(), WILDCARD_ID, dst.relation()).into();
+        let dst_wildcard: Set = (dst.namespace(), WILDCARD_ID, dst.relation()).into();
         let dst_wildcard = get_or_create(dst_wildcard.vertex_id());
         let dst_vertex = get_or_create(dst.vertex_id());
 
@@ -163,8 +182,9 @@ impl RelationGraph {
         add_edge(src_vertex, dst_vertex).await;
     }
 
-    pub async fn remove(&self, src: impl Into<RObjectOrSet<'_>>, dst: &RSet) {
-        let src: RObjectOrSet<'_> = src.into();
+    /// remove a relation
+    pub async fn remove(&self, src: impl Into<ObjectOrSet<'_>>, dst: &Set) {
+        let src: ObjectOrSet<'_> = src.into();
         let mut verticies = self.verticies.write().await;
 
         let src = verticies.get(src.vertex_id()).cloned();
@@ -183,9 +203,9 @@ impl RelationGraph {
         }
     }
 
-    /// does a edge from src to dst exist
-    pub async fn has(&self, src: impl Into<RObjectOrSet<'_>>, dst: &RSet) -> bool {
-        let src: RObjectOrSet<'_> = src.into();
+    /// checks if there is a *direct* relation between `src` and `dst`
+    pub async fn has(&self, src: impl Into<ObjectOrSet<'_>>, dst: &Set) -> bool {
+        let src: ObjectOrSet<'_> = src.into();
         let (src, dst) = {
             let verticies = self.verticies.read().await;
             (
@@ -201,14 +221,19 @@ impl RelationGraph {
         }
     }
 
-    /// checks if there is a path between src and dst using BFS
+    /// checks if there is a *path* between src and dst using [BFS](https://en.wikipedia.org/wiki/Breadth-first_search)
+    ///
+    /// # Arguments
+    /// * `src` - start of the path
+    /// * `dst` - end of the path
+    /// * `limit` - optional maximum search depth of the search before returing false
     pub async fn check<'a>(
         &self,
-        src: impl Into<RObjectOrSet<'_>>,
-        dst: &RSet,
+        src: impl Into<ObjectOrSet<'_>>,
+        dst: &Set,
         limit: Option<u32>,
     ) -> bool {
-        let src: RObjectOrSet<'_> = src.into();
+        let src: ObjectOrSet<'_> = src.into();
         let mut distance = 1;
 
         let mut neighbors: Vec<Arc<Vertex>> = if let Some(src) =
@@ -216,7 +241,7 @@ impl RelationGraph {
         {
             src.edges_out.read().await.iter().cloned().collect()
         } else {
-            let wildcard_src: RObject = (src.namespace(), WILDCARD_ID).into();
+            let wildcard_src: Object = (src.namespace(), WILDCARD_ID).into();
             if let Some(wildcard_src) = self.verticies.read().await.get(wildcard_src.vertex_id()) {
                 wildcard_src
                     .edges_out
@@ -268,25 +293,14 @@ impl RelationGraph {
         false
     }
 
-    pub async fn can_write(
-        &self,
-        src: impl Into<RObjectOrSet<'_>>,
-        dst: &RSet,
-        limit: Option<u32>,
-    ) -> bool {
-        let mut dst = dst.clone();
-
-        dst.0.relation = Some(WRITE_RELATION.to_string());
-        self.check(src, &dst, limit).await
-    }
-
-    pub async fn expand(&self, dst: &RSet) -> Vec<(RObject, Vec<RSet>)> {
+    /// get all objects that are related to dst with the relation path
+    pub async fn expand(&self, dst: &Set) -> Vec<(Object, Vec<Set>)> {
         let start_vertex = {
             let verticies = self.verticies.read().await;
             match verticies.get(dst.vertex_id()) {
                 Some(v) => v.clone(),
                 None => {
-                    let wildcard_dst: RSet = (dst.namespace(), WILDCARD_ID, dst.relation()).into();
+                    let wildcard_dst: Set = (dst.namespace(), WILDCARD_ID, dst.relation()).into();
 
                     match verticies.get(wildcard_dst.vertex_id()) {
                         Some(v) => v.clone(),
@@ -343,13 +357,14 @@ impl RelationGraph {
             .into_iter()
             .map(|(v, path)| {
                 (
-                    RObject(v.id.clone()),
-                    path.into_iter().map(|w| RSet(w.id.clone())).collect(),
+                    Object(v.id.clone()),
+                    path.into_iter().map(|w| Set(w.id.clone())).collect(),
                 )
             })
             .collect()
     }
 
+    /// write graph to file
     pub async fn write_savefile(&self, writeable: &mut (impl AsyncWriteExt + Unpin)) {
         let mut current: (String, String) = (String::new(), String::new());
         for vertex in self.verticies.read().await.iter() {
@@ -392,6 +407,7 @@ impl RelationGraph {
             }
         }
     }
+    /// read graph from file
     pub async fn read_savefile(readable: &mut (impl AsyncBufReadExt + Unpin)) -> Self {
         let mut lines = readable.lines();
         let graph = Self::default();
@@ -412,7 +428,7 @@ impl RelationGraph {
                     let arr = line[arr_start + 1..arr_stop].trim().split(", ");
 
                     for obj in arr {
-                        let src: RObjectOrSet = if obj.contains('#') {
+                        let src: ObjectOrSet = if obj.contains('#') {
                             let sep_1 = obj.find(':');
                             let sep_2 = obj.find('#').unwrap();
 
@@ -424,7 +440,7 @@ impl RelationGraph {
 
                             let rel = &obj[sep_2 + 1..];
 
-                            RObjectOrSet::Set(Cow::Owned((namespace, id, rel).into()))
+                            ObjectOrSet::Set(Cow::Owned((namespace, id, rel).into()))
                         } else {
                             let sep_1 = obj.find(':');
 
@@ -433,7 +449,7 @@ impl RelationGraph {
                             } else {
                                 (dst.0.as_str(), dst.1.as_str())
                             };
-                            RObjectOrSet::Object(Cow::Owned((namespace, id).into()))
+                            ObjectOrSet::Object(Cow::Owned((namespace, id).into()))
                         };
 
                         graph
@@ -492,7 +508,7 @@ impl Hash for Vertex {
     }
 }
 
-impl From<(&str, &str)> for RObject {
+impl From<(&str, &str)> for Object {
     fn from(value: (&str, &str)) -> Self {
         Self(VertexId {
             namespace: value.0.to_string(),
@@ -502,7 +518,7 @@ impl From<(&str, &str)> for RObject {
     }
 }
 
-impl From<(String, String)> for RObject {
+impl From<(String, String)> for Object {
     fn from(value: (String, String)) -> Self {
         Self(VertexId {
             namespace: value.0,
@@ -512,7 +528,7 @@ impl From<(String, String)> for RObject {
     }
 }
 
-impl From<(&str, &str, &str)> for RSet {
+impl From<(&str, &str, &str)> for Set {
     fn from(value: (&str, &str, &str)) -> Self {
         Self(VertexId {
             namespace: value.0.to_string(),
@@ -522,7 +538,7 @@ impl From<(&str, &str, &str)> for RSet {
     }
 }
 
-impl From<(String, String, String)> for RSet {
+impl From<(String, String, String)> for Set {
     fn from(value: (String, String, String)) -> Self {
         Self(VertexId {
             namespace: value.0,
@@ -532,7 +548,7 @@ impl From<(String, String, String)> for RSet {
     }
 }
 
-impl From<(&str, &str, Option<&str>)> for RObjectOrSet<'_> {
+impl From<(&str, &str, Option<&str>)> for ObjectOrSet<'_> {
     fn from(value: (&str, &str, Option<&str>)) -> Self {
         match value.2 {
             Some(r) => Self::Set(Cow::Owned((value.0, value.1, r).into())),
@@ -541,7 +557,7 @@ impl From<(&str, &str, Option<&str>)> for RObjectOrSet<'_> {
     }
 }
 
-impl From<(String, String, Option<String>)> for RObjectOrSet<'_> {
+impl From<(String, String, Option<String>)> for ObjectOrSet<'_> {
     fn from(value: (String, String, Option<String>)) -> Self {
         match value.2 {
             Some(r) => Self::Set(Cow::Owned((value.0, value.1, r).into())),
@@ -550,53 +566,53 @@ impl From<(String, String, Option<String>)> for RObjectOrSet<'_> {
     }
 }
 
-impl Borrow<VertexId> for RSet {
+impl Borrow<VertexId> for Set {
     fn borrow(&self) -> &VertexId {
         &self.0
     }
 }
 
-impl PartialEq<VertexId> for RSet {
+impl PartialEq<VertexId> for Set {
     fn eq(&self, other: &VertexId) -> bool {
         self.0.eq(other)
     }
 }
-impl PartialEq<RSet> for VertexId {
-    fn eq(&self, other: &RSet) -> bool {
+impl PartialEq<Set> for VertexId {
+    fn eq(&self, other: &Set) -> bool {
         self.eq(&other.0)
     }
 }
 
-impl Borrow<VertexId> for RObject {
+impl Borrow<VertexId> for Object {
     fn borrow(&self) -> &VertexId {
         &self.0
     }
 }
 
-impl From<RSet> for RObjectOrSet<'_> {
-    fn from(value: RSet) -> Self {
+impl From<Set> for ObjectOrSet<'_> {
+    fn from(value: Set) -> Self {
         Self::Set(Cow::Owned(value))
     }
 }
-impl From<RObject> for RObjectOrSet<'_> {
-    fn from(value: RObject) -> Self {
+impl From<Object> for ObjectOrSet<'_> {
+    fn from(value: Object) -> Self {
         Self::Object(Cow::Owned(value))
     }
 }
 
-impl<'a> From<&'a RSet> for RObjectOrSet<'a> {
-    fn from(value: &'a RSet) -> Self {
+impl<'a> From<&'a Set> for ObjectOrSet<'a> {
+    fn from(value: &'a Set) -> Self {
         Self::Set(Cow::Borrowed(value))
     }
 }
-impl<'a> From<&'a RObject> for RObjectOrSet<'a> {
-    fn from(value: &'a RObject) -> Self {
+impl<'a> From<&'a Object> for ObjectOrSet<'a> {
+    fn from(value: &'a Object) -> Self {
         Self::Object(Cow::Borrowed(value))
     }
 }
 
-impl<'a> From<&'a RObjectOrSet<'a>> for RObjectOrSet<'a> {
-    fn from(value: &'a RObjectOrSet<'a>) -> Self {
+impl<'a> From<&'a ObjectOrSet<'a>> for ObjectOrSet<'a> {
+    fn from(value: &'a ObjectOrSet<'a>) -> Self {
         match value {
             Self::Object(obj) => Self::Object(Cow::Borrowed(obj.borrow())),
             Self::Set(set) => Self::Set(Cow::Borrowed(set.borrow())),

@@ -1,11 +1,9 @@
-#![feature(btree_cursors)]
-
 use std::{env, sync::Arc, time::Duration};
 
 use grpc_service::RebacService;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use log::info;
-use rebacs_core::RelationGraph;
+use rebacdb::{ObjectOrSet, RelationGraph, Set};
 use serde::Deserialize;
 use tokio::{
     fs::{self, File},
@@ -95,4 +93,15 @@ async fn main() {
         .serve(listen.parse().unwrap())
         .await
         .unwrap()
+}
+
+pub async fn can_write(
+    graph: &RelationGraph,
+    src: impl Into<ObjectOrSet<'_>>,
+    dst: &Set,
+    limit: Option<u32>,
+) -> bool {
+    graph
+        .check(src, &(dst.namespace(), dst.id(), "grant").into(), limit)
+        .await
 }

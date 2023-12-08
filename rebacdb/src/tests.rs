@@ -1,15 +1,15 @@
-use crate::{RObject, RSet, RelationGraph, WILDCARD_ID};
+use crate::{Object, RelationGraph, Set, WILDCARD_ID};
 
 #[tokio::test]
 async fn simple_graph() {
     let graph = RelationGraph::default();
 
-    let alice: RObject = ("user", "alice").into();
-    let bob: RObject = ("user", "bob").into();
-    let charlie: RObject = ("user", "charlie").into();
+    let alice: Object = ("user", "alice").into();
+    let bob: Object = ("user", "bob").into();
+    let charlie: Object = ("user", "charlie").into();
 
-    let foo_read: RSet = ("application", "foo", "read").into();
-    let bar_read: RSet = ("application", "bar", "read").into();
+    let foo_read: Set = ("application", "foo", "read").into();
+    let bar_read: Set = ("application", "bar", "read").into();
 
     graph.insert(&alice, &foo_read).await;
     graph.insert(&bob, &bar_read).await;
@@ -40,18 +40,18 @@ async fn simple_graph() {
 async fn wildcard() {
     let graph = RelationGraph::default();
 
-    let alice: RObject = ("user", "alice").into();
-    let bob: RObject = ("user", "bob").into();
-    let charlie: RObject = ("user", "charlie").into();
+    let alice: Object = ("user", "alice").into();
+    let bob: Object = ("user", "bob").into();
+    let charlie: Object = ("user", "charlie").into();
 
-    let user_wildcard: RObject = ("user", WILDCARD_ID).into();
+    let user_wildcard: Object = ("user", WILDCARD_ID).into();
 
-    let foo_read: RSet = ("application", "foo", "read").into();
-    let bar_read: RSet = ("application", "bar", "read").into();
+    let foo_read: Set = ("application", "foo", "read").into();
+    let bar_read: Set = ("application", "bar", "read").into();
 
-    let app_read: RSet = ("application", WILDCARD_ID, "read").into();
+    let app_read: Set = ("application", WILDCARD_ID, "read").into();
 
-    let some_app_read: RSet = ("application", "bla", "read").into();
+    let some_app_read: Set = ("application", "bla", "read").into();
 
     graph.insert(&alice, &foo_read).await;
     graph.insert(&user_wildcard, &foo_read).await;

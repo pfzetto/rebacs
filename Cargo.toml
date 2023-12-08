@@ -1,8 +1,8 @@
 [workspace]
 resolver = "2"
 members = [
-    "rebacs_server",
-    "rebacs_core",
+    "rebacserver",
+    "rebacdb",
 ]
 
 [workspace.package]

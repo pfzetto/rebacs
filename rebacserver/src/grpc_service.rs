@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use jsonwebtoken::{decode, DecodingKey, TokenData, Validation};
 use log::info;
-use rebacs_core::{RObject, RObjectOrSet, RSet, RelationGraph};
+use rebacdb::{Object as DbObject, ObjectOrSet, RelationGraph, Set as DbSet};
 use serde::Deserialize;
 use tokio::sync::mpsc::Sender;
 use tonic::metadata::MetadataMap;
@@ -29,12 +29,12 @@ impl rebac_service_server::RebacService for RebacService {
     async fn grant(&self, request: Request<GrantReq>) -> Result<Response<GrantRes>, Status> {
         let token =
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
-        let user: RObject = (USER_NS, token.claims.sub.as_str()).into();
+        let user: DbObject = (USER_NS, token.claims.sub.as_str()).into();
 
         let src = extract_src(request.get_ref().src.clone(), &user)?;
         let dst = extract_dst(request.get_ref().dst.clone())?;
 
-        if !self.graph.can_write(&user, &dst, None).await {
+        if !crate::can_write(&self.graph, &user, &dst, None).await {
             return Err(Status::permission_denied(
                 "token not permitted to grant permissions on dst",
             ));
@@ -59,12 +59,12 @@ impl rebac_service_server::RebacService for RebacService {
     async fn revoke(&self, request: Request<RevokeReq>) -> Result<Response<RevokeRes>, Status> {
         let token =
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
-        let user: RObject = (USER_NS, token.claims.sub.as_str()).into();
+        let user: DbObject = (USER_NS, token.claims.sub.as_str()).into();
 
         let src = extract_src(request.get_ref().src.clone(), &user)?;
         let dst = extract_dst(request.get_ref().dst.clone())?;
 
-        if !self.graph.can_write(&user, &dst, None).await {
+        if !crate::can_write(&self.graph, &user, &dst, None).await {
             return Err(Status::permission_denied(
                 "token not permitted to revoke permissions on dst",
             ));
@@ -90,7 +90,7 @@ impl rebac_service_server::RebacService for RebacService {
     async fn exists(&self, request: Request<ExistsReq>) -> Result<Response<ExistsRes>, Status> {
         let token =
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
-        let user: RObject = (USER_NS, token.claims.sub.as_str()).into();
+        let user: DbObject = (USER_NS, token.claims.sub.as_str()).into();
 
         let src = extract_src(request.get_ref().src.clone(), &user)?;
         let dst = extract_dst(request.get_ref().dst.clone())?;
@@ -106,7 +106,7 @@ impl rebac_service_server::RebacService for RebacService {
     ) -> Result<Response<IsPermittedRes>, Status> {
         let token =
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
-        let user: RObject = (USER_NS, token.claims.sub.as_str()).into();
+        let user: DbObject = (USER_NS, token.claims.sub.as_str()).into();
 
         let src = extract_src(request.get_ref().src.clone(), &user)?;
         let dst = extract_dst(request.get_ref().dst.clone())?;
@@ -121,8 +121,8 @@ impl rebac_service_server::RebacService for RebacService {
             extract_token(request.metadata(), &self.oidc_pubkey, &self.oidc_validation).await?;
         let dst = extract_dst(request.get_ref().dst.clone())?;
 
-        let user: RObject = (USER_NS, token.claims.sub.as_str()).into();
-        if !self.graph.can_write(&user, &dst, None).await {
+        let user: DbObject = (USER_NS, token.claims.sub.as_str()).into();
+        if !crate::can_write(&self.graph, &user, &dst, None).await {
             return Err(Status::permission_denied(
                 "token not permitted to expand permissions on dst",
             ));
@@ -186,11 +186,11 @@ async fn extract_token(
 }
 
 fn extract_src<'a>(
-    src: Option<impl Into<RObjectOrSet<'a>>>,
-    fallback_user: &'a RObject,
-) -> Result<RObjectOrSet<'a>, Status> {
+    src: Option<impl Into<ObjectOrSet<'a>>>,
+    fallback_user: &'a DbObject,
+) -> Result<ObjectOrSet<'a>, Status> {
     if let Some(src) = src {
-        let src: RObjectOrSet<'_> = src.into();
+        let src: ObjectOrSet<'_> = src.into();
         if src.namespace().is_empty() {
             Err(Status::invalid_argument("src.namespace must be set"))
         } else if src.id().is_empty() {
@@ -203,9 +203,9 @@ fn extract_src<'a>(
     }
 }
 
-fn extract_dst(dst: Option<Set>) -> Result<RSet, Status> {
+fn extract_dst(dst: Option<Set>) -> Result<DbSet, Status> {
     let dst = dst.ok_or(Status::invalid_argument("dst must be set"))?;
-    let dst: RSet = (dst.namespace, dst.id, dst.relation).into();
+    let dst: DbSet = (dst.namespace, dst.id, dst.relation).into();
 
     if dst.namespace().is_empty() {
         return Err(Status::invalid_argument("dst.namespace must be set"));
@@ -219,7 +219,7 @@ fn extract_dst(dst: Option<Set>) -> Result<RSet, Status> {
 
 macro_rules! from_src {
     ($src:path) => {
-        impl From<$src> for RObjectOrSet<'_> {
+        impl From<$src> for ObjectOrSet<'_> {
             fn from(value: $src) -> Self {
                 use $src;
                 match value {
