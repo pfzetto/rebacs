@@ -144,7 +144,7 @@ impl<'a> ObjectOrSet<'a> {
 }
 
 impl RelationGraph {
-    /// create a new relation between from a [`RObject`] or [`RSet`] to a [`RSet`]
+    /// create a new relation between from a [`Object`] or [`Set`] to a [`Set`]
     pub async fn insert(&self, src: impl Into<ObjectOrSet<'_>>, dst: &Set) {
         let src: ObjectOrSet<'_> = src.into();
         let mut verticies = self.verticies.write().await;
